@@ -11,3 +11,9 @@ aiohttp = "*"
 
 [requires]
 python_version = "3.11"
+
+[packages]
+py-cord = "==2.6.0"
+aiohttp = "*"
+asyncpg = "*"
+
