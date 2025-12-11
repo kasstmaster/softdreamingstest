@@ -222,6 +222,62 @@ async def save_guild_config_storage():
     except Exception as e:
         await log_to_bot_channel(f"save_guild_config_storage failed: {e}")
 
+async def save_guild_config_db(guild: discord.Guild, cfg: dict):
+    if db_pool is None:
+        return
+    dead_chat_ids = cfg.get("dead_chat_channel_ids") or []
+    auto_delete_ids = cfg.get("auto_delete_channel_ids") or []
+    dead_chat_json = json.dumps([int(x) for x in dead_chat_ids])
+    auto_delete_json = json.dumps([int(x) for x in auto_delete_ids])
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO guild_configs (
+                guild_id,
+                welcome_channel_id,
+                birthday_role_id,
+                member_join_role_id,
+                bot_join_role_id,
+                dead_chat_role_id,
+                infected_role_id,
+                active_role_id,
+                dead_chat_channel_ids,
+                auto_delete_channel_ids,
+                mod_log_channel_id,
+                bot_log_channel_id,
+                prize_drop_channel_id
+            ) VALUES (
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+            )
+            ON CONFLICT (guild_id) DO UPDATE SET
+                welcome_channel_id = EXCLUDED.welcome_channel_id,
+                birthday_role_id = EXCLUDED.birthday_role_id,
+                member_join_role_id = EXCLUDED.member_join_role_id,
+                bot_join_role_id = EXCLUDED.bot_join_role_id,
+                dead_chat_role_id = EXCLUDED.dead_chat_role_id,
+                infected_role_id = EXCLUDED.infected_role_id,
+                active_role_id = EXCLUDED.active_role_id,
+                dead_chat_channel_ids = EXCLUDED.dead_chat_channel_ids,
+                auto_delete_channel_ids = EXCLUDED.auto_delete_channel_ids,
+                mod_log_channel_id = EXCLUDED.mod_log_channel_id,
+                bot_log_channel_id = EXCLUDED.bot_log_channel_id,
+                prize_drop_channel_id = EXCLUDED.prize_drop_channel_id
+            """,
+            guild.id,
+            cfg.get("welcome_channel_id"),
+            cfg.get("birthday_role_id"),
+            cfg.get("member_join_role_id"),
+            cfg.get("bot_join_role_id"),
+            cfg.get("dead_chat_role_id"),
+            cfg.get("infected_role_id"),
+            cfg.get("active_role_id"),
+            dead_chat_json,
+            auto_delete_json,
+            cfg.get("mod_log_channel_id"),
+            cfg.get("bot_log_channel_id"),
+            cfg.get("prize_drop_channel_id"),
+        )
+
 def get_guild_config(guild: discord.Guild) -> dict | None:
     if not guild:
         return None
@@ -1915,9 +1971,10 @@ async def setup(
     if prize_drop_channel:
         cfg["prize_drop_channel_id"] = prize_drop_channel.id
     await save_guild_config_storage()
+    await save_guild_config_db(ctx.guild, cfg)
     await log_to_bot_channel(f"[CONFIG] Setup updated for guild {ctx.guild.id} by {ctx.author.mention}.")
     await ctx.respond("Configuration saved for this server.", ephemeral=True)
-    
+
 @bot.slash_command(name="say", description="Make the bot say something right here")
 async def say(ctx, message: discord.Option(str, "Message to send", required=True)):
     if not ctx.author.guild_permissions.administrator:
