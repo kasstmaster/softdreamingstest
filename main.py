@@ -80,7 +80,7 @@ DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID"))
 bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 
 ACTIVE_ROLE_ID = int(os.getenv("ACTIVE_ROLE_ID", "0"))
-BIRTHDAY_ROLE_ID = int(os.getenv("BIRTHDAY_ROLE_ID"))
+BIRTHDAY_ROLE_ID = int(os.getenv("BIRTHDAY_ROLE_ID", "0"))
 DEAD_CHAT_ROLE_ID = int(os.getenv("DEAD_CHAT_ROLE_ID", "0"))
 INFECTED_ROLE_ID = int(os.getenv("INFECTED_ROLE_ID", "0"))
 MEMBER_JOIN_ROLE_ID = int(os.getenv("MEMBER_JOIN_ROLE_ID"))
