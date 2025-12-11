@@ -1830,7 +1830,7 @@ async def setup(
     deadchat_role: discord.Option(discord.Role, "Dead Chat role", required=False),
     infected_role: discord.Option(discord.Role, "Plague infected role", required=False),
     active_role: discord.Option(discord.Role, "Active member role", required=False),
-    deadchat_channels: discord.Option(str, "Dead Chat channel IDs (comma separated)", required=False),
+    deadchat_trigger_channels: discord.Option(str, "Dead Chat channel IDs (comma separated)", required=False),
     autodelete_channels: discord.Option(str, "Auto-delete channel IDs (comma separated)", required=False),
     mod_log_channel: discord.Option(discord.TextChannel, "Mod log thread/channel", required=False),
     bot_log_channel: discord.Option(discord.TextChannel, "Bot log thread/channel", required=False),
@@ -1854,9 +1854,9 @@ async def setup(
         cfg["infected_role_id"] = infected_role.id
     if active_role:
         cfg["active_role_id"] = active_role.id
-    if deadchat_channels:
+    if deadchat_trigger_channels:
         try:
-            cfg["dead_chat_channel_ids"] = [int(x.strip()) for x in deadchat_channels.split(",") if x.strip().isdigit()]
+            cfg["dead_chat_channel_ids"] = [int(x.strip()) for x in deadchat_trigger_channels.split(",") if x.strip().isdigit()]
         except:
             pass
     if autodelete_channels:
