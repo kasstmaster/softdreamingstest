@@ -1919,6 +1919,32 @@ async def config_show(ctx):
         text = text[:1900] + "\n...[truncated]"
     await ctx.respond(f"```json\n{text}\n```", ephemeral=True)
 
+@bot.slash_command(name="config_db_show", description="Show this server's Admin Bot config from the database")
+async def config_db_show(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.respond("Admin only.", ephemeral=True)
+    if db_pool is None:
+        return await ctx.respond("Database not initialized.", ephemeral=True)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM guild_configs WHERE guild_id = $1", ctx.guild.id)
+    if not row:
+        return await ctx.respond("No database config found for this server.", ephemeral=True)
+    data = dict(row)
+    if data.get("dead_chat_channel_ids"):
+        try:
+            data["dead_chat_channel_ids"] = json.loads(data["dead_chat_channel_ids"])
+        except:
+            pass
+    if data.get("auto_delete_channel_ids"):
+        try:
+            data["auto_delete_channel_ids"] = json.loads(data["auto_delete_channel_ids"])
+        except:
+            pass
+    text = json.dumps(data, indent=2, default=str)
+    if len(text) > 1900:
+        text = text[:1900] + "\n...[truncated]"
+    await ctx.respond(f"```json\n{text}\n```", ephemeral=True)
+
 @bot.slash_command(name="setup", description="Configure Admin Bot for this server")
 async def setup(
     ctx,
