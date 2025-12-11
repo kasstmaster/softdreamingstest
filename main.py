@@ -104,6 +104,7 @@ INACTIVE_DAYS_THRESHOLD = int(os.getenv("INACTIVE_DAYS_THRESHOLD", "14"))
 DEAD_CHAT_IDLE_SECONDS = int(os.getenv("DEAD_CHAT_IDLE_SECONDS", "600"))
 DEAD_CHAT_COOLDOWN_SECONDS = int(os.getenv("DEAD_CHAT_COOLDOWN_SECONDS", "0"))
 PRIZE_PLAGUE_TRIGGER_HOUR_UTC = int(os.getenv("PRIZE_PLAGUE_TRIGGER_HOUR_UTC", "12"))
+PRIZE_EMOJI = "🎁"
 
 IGNORE_MEMBER_IDS = {int(x.strip()) for x in os.getenv("IGNORE_MEMBER_IDS", "").split(",") if x.strip().isdigit()}
 MONTH_CHOICES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
@@ -278,20 +279,50 @@ async def save_guild_config_db(guild: discord.Guild, cfg: dict):
             cfg.get("prize_drop_channel_id"),
         )
 
-def get_guild_config(guild: discord.Guild) -> dict | None:
-    if not guild:
+async def get_guild_config(guild: discord.Guild) -> dict | None:
+    if not guild or db_pool is None:
         return None
-    return guild_configs.get(guild.id)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM guild_configs WHERE guild_id = $1", guild.id)
+    if not row:
+        return None
+    data = dict(row)
+    if data.get("dead_chat_channel_ids"):
+        try:
+            data["dead_chat_channel_ids"] = [int(x) for x in json.loads(data["dead_chat_channel_ids"])]
+        except:
+            data["dead_chat_channel_ids"] = []
+    else:
+        data["dead_chat_channel_ids"] = []
+    if data.get("auto_delete_channel_ids"):
+        try:
+            data["auto_delete_channel_ids"] = [int(x) for x in json.loads(data["auto_delete_channel_ids"])]
+        except:
+            data["auto_delete_channel_ids"] = []
+    else:
+        data["auto_delete_channel_ids"] = []
+    return data
 
-def ensure_guild_config(guild: discord.Guild) -> dict:
-    cfg = guild_configs.get(guild.id)
-    if cfg is None:
-        cfg = {}
-        guild_configs[guild.id] = cfg
-    return cfg
+async def ensure_guild_config(guild: discord.Guild) -> dict:
+    if db_pool is None:
+        return {}
+    cfg = await get_guild_config(guild)
+    if cfg is not None:
+        return cfg
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO guild_configs (guild_id)
+            VALUES ($1)
+            ON CONFLICT (guild_id) DO NOTHING
+            """,
+            guild.id,
+        )
+    cfg = await get_guild_config(guild)
+    return cfg or {}
 
-def get_config_channel(guild: discord.Guild, key: str) -> TextChannel | None:
-    cfg = get_guild_config(guild)
+async def get_config_channel(guild: discord.Guild, key: str) -> TextChannel | None:
+    cfg = await get_guild_config(guild)
     if not cfg:
         return None
     cid = cfg.get(key)
@@ -302,8 +333,8 @@ def get_config_channel(guild: discord.Guild, key: str) -> TextChannel | None:
         return ch
     return None
 
-def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None:
-    cfg = get_guild_config(guild)
+async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None:
+    cfg = await get_guild_config(guild)
     if not cfg:
         return None
     rid = cfg.get(key)
@@ -970,7 +1001,7 @@ async def initialize_dead_chat():
 
 async def handle_dead_chat_message(message: discord.Message):
     global dead_current_holder_id
-    cfg = get_guild_config(message.guild)
+    cfg = await get_guild_config(message.guild)
     dead_role_id = cfg.get("dead_chat_role_id", DEAD_CHAT_ROLE_ID) if cfg else DEAD_CHAT_ROLE_ID
     dead_channels = cfg.get("dead_chat_channel_ids", DEAD_CHAT_CHANNEL_IDS) if cfg else DEAD_CHAT_CHANNEL_IDS
     active_role_id = cfg.get("active_role_id", ACTIVE_ROLE_ID) if cfg else ACTIVE_ROLE_ID
@@ -1493,7 +1524,7 @@ async def member_join_watcher():
                     guild = bot.get_guild(guild_id)
                     if not guild:
                         continue
-                    cfg = get_guild_config(guild)
+                    cfg = await get_guild_config(guild)
                     member_role_id = cfg.get("member_join_role_id", MEMBER_JOIN_ROLE_ID) if cfg else MEMBER_JOIN_ROLE_ID
                     if not member_role_id:
                         continue
@@ -1538,7 +1569,7 @@ async def activity_inactive_watcher():
                 if dt < cutoff:
                     inactive_ids.add(mid)
             for guild in bot.guilds:
-                cfg = get_guild_config(guild)
+                cfg = await get_guild_config(guild)
                 active_role_id = cfg.get("active_role_id", ACTIVE_ROLE_ID) if cfg else ACTIVE_ROLE_ID
                 if not active_role_id:
                     continue
@@ -1593,8 +1624,8 @@ async def on_ready():
 
 @bot.event
 async def on_member_update(before, after):
-    cfg = get_guild_config(after.guild)
-    ch = get_config_channel(after.guild, "welcome_channel_id") if cfg else bot.get_channel(WELCOME_CHANNEL_ID)
+    cfg = await get_guild_config(after.guild)
+    ch = await get_config_channel(after.guild, "welcome_channel_id") if cfg else bot.get_channel(WELCOME_CHANNEL_ID)
     if not ch:
         return
     birthday_role_id = cfg.get("birthday_role_id", BIRTHDAY_ROLE_ID) if cfg else BIRTHDAY_ROLE_ID
@@ -1627,7 +1658,7 @@ async def on_message(message: discord.Message):
         new_msg = await message.channel.send(sticky_texts[message.channel.id], view=view)
         sticky_messages[message.channel.id] = new_msg.id
         await save_stickies()
-    cfg = get_guild_config(message.guild)
+    cfg = await get_guild_config(message.guild)
     auto_ids = cfg.get("auto_delete_channel_ids", AUTO_DELETE_CHANNEL_IDS) if cfg else AUTO_DELETE_CHANNEL_IDS
     if message.channel.id in auto_ids:
         content = message.content.lower()
@@ -1645,33 +1676,36 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    cfg = get_guild_config(member.guild)
-    ch = get_config_channel(member.guild, "welcome_channel_id") if cfg else bot.get_channel(WELCOME_CHANNEL_ID)
+    cfg = await get_guild_config(member.guild)
+    ch = await get_config_channel(member.guild, "welcome_channel_id") if cfg else bot.get_channel(WELCOME_CHANNEL_ID)
+
     if member.bot:
-        await log_to_bot_channel(f"Bot joined: {member.mention}")
         bot_role_id = cfg.get("bot_join_role_id", BOT_JOIN_ROLE_ID) if cfg else BOT_JOIN_ROLE_ID
-        if bot_role_id:
-            role = member.guild.get_role(bot_role_id)
-            if role:
-                await member.add_roles(role)
+        bot_role = member.guild.get_role(bot_role_id) if bot_role_id else None
+        if bot_role:
+            try:
+                await member.add_roles(bot_role)
+            except Exception as e:
+                await log_to_bot_channel(f"[WARN] Could not assign bot role to {member.mention}: {e}")
         return
-    await log_to_bot_channel(
-        f"[JOIN] Member joined: {member.mention} (ID {member.id}) in guild {member.guild.id}."
-    )
+
+    if ch:
+        try:
+            await ch.send(f"Welcome {member.mention}!")
+        except Exception as e:
+            await log_to_bot_channel(f"[ERROR] Could not send welcome for joiner {member.mention}: {e}")
+
     member_role_id = cfg.get("member_join_role_id", MEMBER_JOIN_ROLE_ID) if cfg else MEMBER_JOIN_ROLE_ID
     if member_role_id:
-        assign_at = datetime.utcnow() + timedelta(days=1)
+        assign_at = (discord.utils.utcnow() + timedelta(seconds=180)).isoformat() + "Z"
         pending_member_joins.append(
             {
                 "guild_id": member.guild.id,
                 "member_id": member.id,
-                "assign_at": assign_at.isoformat() + "Z",
+                "assign_at": assign_at,
             }
         )
         await save_member_join_storage()
-        await log_to_bot_channel(
-            f"[MEMBERJOIN] Queued delayed member role for {member.mention} at {assign_at.isoformat()}Z."
-        )
 
 @bot.event
 async def on_member_ban(guild, user):
@@ -1913,7 +1947,7 @@ async def config_init(ctx):
 async def config_show(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
-    cfg = get_guild_config(ctx.guild) or {}
+    cfg = await get_guild_config(ctx.guild) or {}
     text = json.dumps(cfg, indent=2)
     if len(text) > 1900:
         text = text[:1900] + "\n...[truncated]"
@@ -1964,7 +1998,7 @@ async def setup(
 ):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
-    cfg = ensure_guild_config(ctx.guild)
+    cfg = await ensure_guild_config(ctx.guild)
     cfg["welcome_channel_id"] = welcome_channel.id
     if storage_channel:
         cfg["storage_channel_id"] = storage_channel.id
