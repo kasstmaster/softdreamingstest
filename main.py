@@ -64,6 +64,7 @@ import aiohttp
 import json
 import traceback
 import sys
+import asyncpg
 from datetime import datetime, timedelta
 from discord import TextChannel
 from discord.ui import Select
@@ -124,6 +125,7 @@ GAME_NOTIF_REMOVED_PREFIX = "Removed: "
 ############### GLOBAL STATE / STORAGE ###############
 guild_configs: dict[int, dict] = {}
 guild_config_storage_message_id: int | None = None
+db_pool: asyncpg.Pool | None = None
 
 twitch_access_token: str | None = None
 twitch_live_state: dict[str, bool] = {}
@@ -161,6 +163,34 @@ startup_log_buffer: list[str] = []
 
 
 ############### HELPER FUNCTIONS ###############
+async def init_db():
+    global db_pool
+    if db_pool is not None:
+        return
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        await log_to_bot_channel("@everyone DATABASE_URL is not set. Postgres not initialized.")
+        return
+    db_pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5)
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS guild_configs (
+            guild_id BIGINT PRIMARY KEY,
+            welcome_channel_id BIGINT,
+            birthday_role_id BIGINT,
+            member_join_role_id BIGINT,
+            bot_join_role_id BIGINT,
+            dead_chat_role_id BIGINT,
+            infected_role_id BIGINT,
+            active_role_id BIGINT,
+            dead_chat_channel_ids TEXT,
+            auto_delete_channel_ids TEXT,
+            mod_log_channel_id BIGINT,
+            bot_log_channel_id BIGINT,
+            prize_drop_channel_id BIGINT
+        );
+        """)
+
 async def init_guild_config_storage():
     global guild_config_storage_message_id, guild_configs
     msg = await find_storage_message("CONFIG_DATA:")
@@ -1475,6 +1505,7 @@ async def activity_inactive_watcher():
 @bot.event
 async def on_ready():
     print(f"{bot.user} is online!")
+    await init_db()
     bot.add_view(GameNotificationView())
     await run_all_inits_with_logging()
 
@@ -1636,6 +1667,19 @@ async def on_error(event, *args, **kwargs):
 
 
 ############### COMMAND GROUPS ###############
+@bot.slash_command(name="db_test", description="Test Postgres connectivity")
+async def db_test(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.respond("Admin only.", ephemeral=True)
+    if db_pool is None:
+        return await ctx.respond("db_pool is not initialized. Check DATABASE_URL.", ephemeral=True)
+    try:
+        async with db_pool.acquire() as conn:
+            value = await conn.fetchval("SELECT 1;")
+    except Exception as e:
+        return await ctx.respond(f"DB error: {e}", ephemeral=True)
+    await ctx.respond(f"DB OK, SELECT 1 returned: {value}", ephemeral=True)
+
 @bot.slash_command(name="storage_debug", description="Show storage message IDs for all systems")
 async def storage_debug(
     ctx,
