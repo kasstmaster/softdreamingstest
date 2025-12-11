@@ -76,7 +76,7 @@ intents.members = True
 intents.message_content = True
 intents.voice_states = True
 
-DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID"))
+DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID", "0"))
 bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 
 ACTIVE_ROLE_ID = int(os.getenv("ACTIVE_ROLE_ID", "0"))
@@ -88,11 +88,10 @@ BOT_JOIN_ROLE_ID = int(os.getenv("BOT_JOIN_ROLE_ID", "0"))
 
 WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID", "0"))
 MOD_LOG_THREAD_ID = int(os.getenv("MOD_LOG_THREAD_ID", "0"))
-
 STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", "0"))
 BOT_LOG_THREAD_ID = int(os.getenv("BOT_LOG_THREAD_ID", "0"))
-WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID"))
 PRIZE_DROP_CHANNEL_ID = int(os.getenv("PRIZE_DROP_CHANNEL_ID", "0"))
+
 AUTO_DELETE_CHANNEL_IDS = [int(x.strip()) for x in os.getenv("AUTO_DELETE_CHANNEL_IDS", "").split(",") if x.strip().isdigit()]
 DEAD_CHAT_CHANNEL_IDS = [int(x.strip()) for x in os.getenv("DEAD_CHAT_CHANNEL_IDS", "").split(",") if x.strip().isdigit()]
 
