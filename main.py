@@ -2169,7 +2169,6 @@ class SetupPagerView(discord.ui.View):
                 "> `/welcome_channel` - Set the welcome channel.\n"
                 "> `/birthday_announce_channel` - Set birthday announcements.\n"
                 "> `/qotd_set_channel` - Choose the QOTD channel.\n"
-                "> `/twitch_stream_channel` - Set default Twitch alert channel.\n"
                 "> `/deadchat_trigger_channels` - Add Dead Chat channels.\n"
                 "> `/prize_channel` - Set prize drop channel.\n"
                 "> `/prize_announce_channel` - Set prize announcement channel.\n"
@@ -3070,7 +3069,7 @@ async def birthday_public(ctx):
     await ctx.respond("Created a new public birthday list message in this channel.", ephemeral=True)
 
 @bot.slash_command(
-    name="qotd_set_channel",
+    name="qotd_channel",
     description="Admin: Choose which channel the daily QOTD will post in."
 )
 async def qotd_set_channel(
@@ -3642,21 +3641,6 @@ async def add_channel_birthday_announce(
     cfg = await _update_guild_config(ctx, updates, "birthday announce channel")
     if cfg:
         await ctx.respond(f"Set birthday announce channel to {channel.mention}", ephemeral=True)
-
-
-@bot.slash_command(
-    name="twitch_stream_channel",
-    description="Set the default channel for Twitch live notifications."
-)
-async def add_channel_twitch_announce(
-    ctx,
-    channel: discord.Option(discord.TextChannel, required=True),
-):
-    updates = {"twitch_announce_channel_id": channel.id}
-    cfg = await _update_guild_config(ctx, updates, "twitch announce channel")
-    if cfg:
-        await ctx.respond(f"Set twitch announce channel to {channel.mention}", ephemeral=True)
-
 
 @bot.slash_command(
     name="deadchat_trigger_channels",
