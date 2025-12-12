@@ -1835,6 +1835,74 @@ async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member"
     await log_to_guild_bot_channel(guild, f"[BIRTHDAY] Manual birthday announce sent for {member.mention} by {ctx.author.mention}.")
     await ctx.respond(f"Sent birthday message for {member.mention}.", ephemeral=True)
 
+@bot.slash_command(name="send_msg", description="Send a custom message as the bot in this channel")
+async def send_msg(
+    ctx,
+    message: discord.Option(str, "Message to send (use \\n for new lines)", required=True),
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("You need Administrator.", ephemeral=True)
+    try:
+        await ctx.channel.send(message.replace("\\n", "\n"))
+        await ctx.respond("Message sent.", ephemeral=True)
+    except Exception as e:
+        await log_exception("send_msg", e)
+        try:
+            await ctx.respond("Failed to send message.", ephemeral=True)
+        except:
+            pass
+
+
+@bot.slash_command(name="edit_msg", description="Edit a bot message in this channel (up to 4 lines)")
+async def edit_msg(
+    ctx,
+    message_id: discord.Option(str, "ID of the bot message", required=True),
+    line1: discord.Option(str, "Line 1 (optional)", required=False) = None,
+    line2: discord.Option(str, "Line 2 (optional)", required=False) = None,
+    line3: discord.Option(str, "Line 3 (optional)", required=False) = None,
+    line4: discord.Option(str, "Line 4 (optional)", required=False) = None,
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("You need Administrator.", ephemeral=True)
+    try:
+        msg_id_int = int(message_id)
+    except ValueError:
+        return await ctx.respond("Invalid message ID.", ephemeral=True)
+    try:
+        msg = await ctx.channel.fetch_message(msg_id_int)
+    except discord.NotFound:
+        return await ctx.respond("Message not found in this channel.", ephemeral=True)
+    except discord.Forbidden:
+        return await ctx.respond("I cannot access that message.", ephemeral=True)
+    except discord.HTTPException:
+        return await ctx.respond("Error fetching that message.", ephemeral=True)
+
+    if msg.author.id != bot.user.id:
+        return await ctx.respond("That message was not sent by me.", ephemeral=True)
+
+    existing_lines = msg.content.split("\n")
+    while len(existing_lines) < 4:
+        existing_lines.append("")
+
+    new_lines = [
+        line1 if line1 is not None else existing_lines[0],
+        line2 if line2 is not None else existing_lines[1],
+        line3 if line3 is not None else existing_lines[2],
+        line4 if line4 is not None else existing_lines[3],
+    ]
+    new_content = "\n".join(new_lines)
+
+    try:
+        await msg.edit(content=new_content)
+        await ctx.respond("Message updated.", ephemeral=True)
+    except Exception as e:
+        await log_exception("edit_msg", e)
+        try:
+            await ctx.respond("Failed to edit message.", ephemeral=True)
+        except:
+            pass
+            
+
 @bot.slash_command(
     name="active_member_role_add",
     description="Mark a member as active right now (gives active role)."
