@@ -534,7 +534,6 @@ async def set_theme_mode(guild_id: int, mode: str):
     if db_pool is None:
         return
     if mode not in ("auto", "none", "halloween", "christmas"):
-        # silently ignore bad values in case someone passes nonsense
         return
 
     async with db_pool.acquire() as conn:
@@ -676,7 +675,6 @@ async def get_guild_config(guild: discord.Guild) -> dict:
         row = await conn.fetchrow("SELECT * FROM guild_configs WHERE guild_id = $1", guild.id)
 
     if not row:
-        # No row yet — return empty config instead of None
         return {}
 
     data = dict(row)
@@ -711,8 +709,6 @@ async def ensure_guild_config(guild: discord.Guild) -> dict:
 
     cfg = await get_guild_config(guild)
 
-    # If config exists (i.e., row exists), return it
-    # We tell existence by checking if the DB row existed!
     async with db_pool.acquire() as conn:
         exists = await conn.fetchval(
             "SELECT EXISTS(SELECT 1 FROM guild_configs WHERE guild_id=$1)", guild.id
@@ -721,14 +717,12 @@ async def ensure_guild_config(guild: discord.Guild) -> dict:
     if exists:
         return cfg
 
-    # If row does NOT exist, insert it
     async with db_pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO guild_configs (guild_id) VALUES ($1) ON CONFLICT DO NOTHING",
             guild.id
         )
 
-    # load again after inserting
     return await get_guild_config(guild)
 
 async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None:
@@ -853,7 +847,6 @@ async def run_all_inits_with_logging():
         "ACTIVITY": True,
     }
 
-    # DB-backed storage initializers
     try:
         await init_sticky_storage()
     except Exception as e:
@@ -896,7 +889,6 @@ async def run_all_inits_with_logging():
         problems.append("init_last_activity_storage failed; last activity could not be loaded from Postgres.")
         await log_exception("init_last_activity_storage", e)
 
-    # Runtime system checks (permissions, roles, etc.)
     try:
         runtime_problems, runtime_results = await check_runtime_systems()
         problems.extend(runtime_problems)
@@ -911,7 +903,6 @@ async def run_all_inits_with_logging():
         problems.append("Runtime system checks failed; see logs for details.")
         await log_exception("check_runtime_systems", e)
 
-    # Build summary text
     lines = []
     lines.append("")
     lines.append("[STORAGE]")
@@ -965,7 +956,7 @@ async def run_all_inits_with_logging():
         await log_to_bot_channel("[STARTUP] All systems passed storage and runtime checks.")
 
 async def init_sticky_storage():
-    global sticky_storage_message_id  # kept only so code compiles, but unused now
+    global sticky_storage_message_id
     sticky_storage_message_id = None
 
     if db_pool is None:
@@ -1004,7 +995,7 @@ async def save_stickies():
 
 async def init_member_join_storage():
     global member_join_storage_message_id, pending_member_joins
-    member_join_storage_message_id = None  # no Discord message in DB mode
+    member_join_storage_message_id = None
 
     if db_pool is None:
         return
@@ -1086,7 +1077,6 @@ async def remove_birthday(guild_id: int, user_id: int) -> bool:
             guild_id,
             user_id,
         )
-    # result is like "DELETE 0" or "DELETE 1"
     return result.split()[-1] != "0"
 
 async def get_guild_qotd_settings(guild_id: int):
@@ -1110,7 +1100,6 @@ async def get_guild_qotd_settings(guild_id: int):
     if not row:
         return None
 
-    # Some old rows might have NULL for ping_role_id; treat that as 0
     ping_role_id = row.get("ping_role_id", 0) if isinstance(row, dict) else row["ping_role_id"]
     if ping_role_id is None:
         ping_role_id = 0
@@ -1168,7 +1157,6 @@ async def remove_vc_role_link(guild_id: int, channel_id: int) -> bool:
             guild_id,
             channel_id,
         )
-    # result is like "DELETE 0" or "DELETE 1"
     return result.split()[-1] != "0"
     
 
@@ -1183,7 +1171,6 @@ async def get_qotd_sheet_and_tab():
     sh = gc.open_by_key(SHEET_ID)
     today = datetime.utcnow()
 
-    # Seasonal logic
     if 10 <= today.month <= 11:
         tab = "Fall Season"
     elif today.month == 12:
@@ -1191,7 +1178,6 @@ async def get_qotd_sheet_and_tab():
     else:
         tab = "Regular"
 
-    # Try seasonal tab, fall back to first sheet
     try:
         ws = sh.worksheet(tab)
     except gspread.WorksheetNotFound:
@@ -1214,19 +1200,16 @@ async def get_question_of_the_day() -> str | None:
         print("QOTD: Sheet empty or missing questions.")
         return None
 
-    # Skip header
     questions = all_vals[1:]
     unused = []
 
     for row in questions:
-        # Normalize rows to 2 columns minimum
         row += [""] * (2 - len(row))
 
         status_a = row[0].strip()
         status_b = row[1].strip()
         question_text = row[1].strip() or row[0].strip()
 
-        # Add to unused list if unused & not blank
         if question_text and (not status_a or not status_b):
             unused.append(row)
 
@@ -1243,8 +1226,7 @@ async def get_question_of_the_day() -> str | None:
         print("QOTD: Chosen row empty, skipping.")
         return None
 
-    # Mark used
-    row_idx = questions.index(chosen) + 2  # +2 → header offset
+    row_idx = questions.index(chosen) + 2 
     status_col = "A" if chosen[1].strip() else "B"
 
     try:
@@ -1284,7 +1266,6 @@ async def post_daily_qotd():
                 color=discord.Color.gold(),
             )
 
-            # Optional ping role
             ping_role_id = settings.get("ping_role_id", 0) or 0
             ping_role = guild.get_role(ping_role_id) if ping_role_id else None
 
@@ -1560,7 +1541,7 @@ async def handle_dead_chat_message(message: discord.Message):
 
 async def init_deadchat_storage():
     global deadchat_storage_message_id, deadchat_last_times
-    deadchat_storage_message_id = None  # no Discord message
+    deadchat_storage_message_id = None  
 
     if db_pool is None:
         return
@@ -1599,7 +1580,7 @@ async def save_deadchat_storage():
 
 async def init_deadchat_state_storage():
     global deadchat_state_storage_message_id
-    deadchat_state_storage_message_id = None  # no Discord message
+    deadchat_state_storage_message_id = None  
     await load_deadchat_state()
 
 async def load_deadchat_state():
@@ -1668,7 +1649,7 @@ async def save_deadchat_state():
 
 async def init_twitch_state_storage():
     global twitch_state_storage_message_id
-    twitch_state_storage_message_id = None  # no Discord message
+    twitch_state_storage_message_id = None 
     await load_twitch_state()
     await log_to_bot_channel("[TWITCH] State storage initialized from Postgres.")
 
@@ -1738,7 +1719,7 @@ async def fetch_twitch_streams():
 
 async def init_last_activity_storage():
     global last_activity_storage_message_id, last_activity
-    last_activity_storage_message_id = None  # no Discord message
+    last_activity_storage_message_id = None  
 
     if db_pool is None:
         last_activity = {}
@@ -1801,9 +1782,6 @@ async def touch_member_activity(member: discord.Member):
             await log_to_guild_bot_channel(member.guild, f"[ACTIVITY] {member.mention} marked active and given active role.")
         except Exception as e:
             await log_exception("touch_member_activity_add_role", e)
-
-
-# ---------- THEME HELPERS ----------
 
 def find_role_by_name(guild: discord.Guild, name: str) -> discord.Role | None:
     name_lower = name.lower()
@@ -2033,7 +2011,7 @@ class BasePrizeView(discord.ui.View):
             )
             await ch.send(msg)
         await log_to_guild_bot_channel(guild, f"[PRIZE] {interaction.user.mention} claimed prize '{self.gift_title}' (rarity {self.rarity}).")
-        claim_text = cfg.get("prize_claim_text") or DEFAULT_PRIZE_CLAIM_MESSAGE)
+        claim_text = cfg.get("prize_claim_text") or DEFAULT_PRIZE_CLAIM_MESSAGE
         await interaction.response.send_message(claim_text.format(gift=self.gift_title), ephemeral=True)
 
 class PrizeView(BasePrizeView):
@@ -2045,7 +2023,7 @@ class PrizeView(BasePrizeView):
 class SetupPagerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.active_page: str | None = None  # "features", "commands", or None (home)
+        self.active_page: str | None = None 
 
     def make_home_embed(self) -> discord.Embed:
         embed = discord.Embed(
@@ -2287,7 +2265,6 @@ class SetupPagerView(discord.ui.View):
         return embed
 
     def refresh_button_styles(self):
-        # Both gray on home (active_page is None)
         for child in self.children:
             if not isinstance(child, discord.ui.Button):
                 continue
@@ -2306,7 +2283,7 @@ class SetupPagerView(discord.ui.View):
 
     @discord.ui.button(
         label="Features",
-        style=discord.ButtonStyle.secondary,  # gray by default
+        style=discord.ButtonStyle.secondary,  
         custom_id="setup_features",
     )
     async def features_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -2317,7 +2294,7 @@ class SetupPagerView(discord.ui.View):
 
     @discord.ui.button(
         label="Commands",
-        style=discord.ButtonStyle.secondary,  # gray by default
+        style=discord.ButtonStyle.secondary,  
         custom_id="setup_commands",
     )
     async def commands_button(self, button: discord.ui.Button, interaction: discord.Interaction):
@@ -2335,7 +2312,7 @@ async def qotd_scheduler():
     """Posts the daily QOTD to every guild that has QOTD enabled."""
     await bot.wait_until_ready()
 
-    TARGET_HOUR_UTC = 16      # <-- CHANGE THIS IF NEEDED
+    TARGET_HOUR_UTC = 16  
     TARGET_MINUTE = 0
 
     already_ran = False
@@ -2343,7 +2320,6 @@ async def qotd_scheduler():
     while not bot.is_closed():
         now = datetime.utcnow()
 
-        # Trigger at the exact minute
         if now.hour == TARGET_HOUR_UTC and now.minute == TARGET_MINUTE:
             if not already_ran:
                 await post_daily_qotd()
@@ -2377,7 +2353,7 @@ async def birthday_checker():
     """Runs once a day and gives/removes the birthday role for each guild."""
     await bot.wait_until_ready()
 
-    TARGET_HOUR_UTC = 15   # same time as your old bot
+    TARGET_HOUR_UTC = 15 
     TARGET_MINUTE = 0
 
     while not bot.is_closed():
@@ -2402,11 +2378,9 @@ async def birthday_checker():
                     for member in guild.members:
                         mm_dd = birthdays.get(str(member.id))
 
-                        # Give role if today is their birthday
                         if mm_dd == today:
                             if role not in member.roles:
                                 await member.add_roles(role, reason="Birthday!")
-                        # Remove role if their birthday is over
                         else:
                             if role in member.roles:
                                 await member.remove_roles(role, reason="Birthday over")
@@ -2414,7 +2388,6 @@ async def birthday_checker():
                 except Exception as e:
                     await log_exception(f"birthday_checker_guild_{guild.id}", e)
 
-            # wait a bit so we don't trigger twice in the same minute
             await asyncio.sleep(61)
 
         await asyncio.sleep(30)
@@ -2434,7 +2407,7 @@ async def twitch_watcher():
                     await save_twitch_state()
                     for guild in bot.guilds:
                         cfg = await ensure_guild_config(guild)
-                        text = cfg.get("twitch_live_text") or DEFAULT_TWITCH_LIVE_MESSAGE)
+                        text = cfg.get("twitch_live_text") or DEFAULT_TWITCH_LIVE_MESSAGE
                         for tc in cfg.get("twitch_configs", []):
                             if tc["username"].lower() == name:
                                 ch = guild.get_channel(tc["announce_channel_id"])
@@ -2593,6 +2566,10 @@ async def on_ready():
     bot.loop.create_task(qotd_scheduler())
     bot.loop.create_task(theme_scheduler())
     bot.loop.create_task(birthday_checker())
+    bot.loop.create_task(twitch_watcher())
+    bot.loop.create_task(infected_watcher())
+    bot.loop.create_task(member_join_watcher())
+    bot.loop.create_task(activity_inactive_watcher())
 
 @bot.event
 async def on_member_update(before, after):
@@ -2605,7 +2582,7 @@ async def on_member_update(before, after):
     new_roles = set(after.roles) - set(before.roles)
     for role in new_roles:
         if role.id == birthday_role_id:
-            text = cfg.get("birthday_text") or DEFAULT_BIRTHDAY_TEXT)
+            text = cfg.get("birthday_text") or DEFAULT_BIRTHDAY_TEXT
             await ch.send(text.replace("{mention}", after.mention))
             await log_to_guild_bot_channel(guild, f"[BIRTHDAY] Birthday role granted and message sent for {after.mention}.")
 
@@ -2633,7 +2610,6 @@ async def on_message(message: discord.Message):
     auto_ids = cfg.get("auto_delete_channel_ids", [])
     if message.channel.id in auto_ids:
         content_lower = message.content.lower()
-        # 100% custom, optional ignore list
         ignore_phrases = cfg.get("auto_delete_ignore_phrases") or []
         if not any(phrase.lower() in content_lower for phrase in ignore_phrases):
             delay = cfg.get("auto_delete_delay_seconds", DELETE_DELAY_SECONDS)
@@ -2663,15 +2639,12 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if guild is None:
         return
     if member.bot:
-        # If you want bots to get VC roles too, remove this line.
         return
 
     links = await get_guild_vc_links(guild.id)
     if not links:
         return
 
-    # For each configured VC link, make sure the member's roles match
-    # whether they are currently in that specific VC.
     for channel_id, role_id in links.items():
         role = guild.get_role(role_id)
         if not role:
@@ -2680,7 +2653,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         in_this_vc = after.channel is not None and after.channel.id == channel_id
         has_role = role in member.roles
 
-        # Joined that VC → ensure they have the role
         if in_this_vc and not has_role:
             try:
                 await member.add_roles(role, reason="VC role link - joined voice channel")
@@ -2691,7 +2663,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             except Exception as e:
                 await log_exception("on_voice_state_update_add_vc_role", e)
 
-        # Not in that VC → ensure they do NOT have the role
         elif not in_this_vc and has_role:
             try:
                 await member.remove_roles(role, reason="VC role link - left voice channel")
@@ -2779,11 +2750,9 @@ async def on_application_command_error(ctx, error):
     print(tb)
 
     try:
-        # Pycord ApplicationContext usually supports respond()
         await ctx.respond(f"An internal error occurred.\n```{repr(error)}```", ephemeral=True)
     except Exception:
         try:
-            # If ctx is actually an Interaction
             if hasattr(ctx, "response") and not ctx.response.is_done():
                 await ctx.response.send_message(f"An internal error occurred.\n```{repr(error)}```", ephemeral=True)
             elif hasattr(ctx, "followup"):
@@ -2801,8 +2770,8 @@ async def on_error(event, *args, **kwargs):
 
 
 ############### COMMAND GROUPS ###############
-TEST_GUILD_ID = 123456789012345678  # <-- your test server guild id
-TEST_CHANNEL_ID = None             # <-- optional: put #bot-test channel id here
+TEST_GUILD_ID = 123456789012345678 
+TEST_CHANNEL_ID = None  
 
 class FakeCtx:
     """
@@ -2816,7 +2785,6 @@ class FakeCtx:
         self.channel = channel
 
     async def respond(self, content=None, *, ephemeral=False, **kwargs):
-        # Ignore ephemeral; always send to the test channel
         if content:
             return await self.channel.send(content)
 
@@ -2827,16 +2795,13 @@ class FakeCtx:
 
 @bot.slash_command(name="test_all", description="TEST SERVER ONLY: run every command.")
 async def test_all(ctx):
-    # Safety gates
     if not ctx.guild or ctx.guild.id != TEST_GUILD_ID:
         return await ctx.respond("This is restricted to the test server.", ephemeral=True)
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
 
-    # Pick output channel
     out_ch = bot.get_channel(TEST_CHANNEL_ID) if TEST_CHANNEL_ID else ctx.channel
 
-    # Pick helpers (best-effort)
     text_ch = out_ch
     voice_ch = next((c for c in ctx.guild.voice_channels if c.permissions_for(ctx.guild.me).view_channel), None)
     role = next((r for r in ctx.guild.roles if r.name != "@everyone"), None)
@@ -2854,29 +2819,21 @@ async def test_all(ctx):
         except Exception as e:
             results.append(f"❌ {name}: {type(e).__name__}: {e}")
 
-    # ---- Run your existing commands (CALL YOUR REAL FUNCTIONS HERE) ----
-    # IMPORTANT: these names must match your actual command function names.
-    # If your functions require different parameter names/types, adjust the args.
-
     await run_step("birthday_public", birthday_public(fctx))
     await run_step("birthday_list", birthday_list(fctx))
 
-    # birthday_set / birthday_set_for
-    await run_step("birthday_set", birthday_set(fctx, month=1, day=1))
-    await run_step("birthday_set_for", birthday_set_for(fctx, member=ctx.author, month=1, day=2))
+    await run_step("birthday_set", birthday_set(fctx, month="January", day=1))
+    await run_step("birthday_set_for", birthday_set_for(fctx, member=ctx.author, month="January", day=2))
 
-    # announce commands
-    await run_step("birthday_announce_send", birthday_announce_send(fctx))
-    await run_step("prize_announce_send", prize_announce_send(fctx, prize="Test Prize"))
+    await run_step("birthday_announce_send", birthday_announce(fctx, member=ctx.author))
+    await run_step("prize_announce_send", prize_announce(fctx, member=ctx.author, prize="Test Prize"))
 
-    # qotd
     await run_step("qotd_enable", qotd_enable(fctx))
-    await run_step("qotd_channel", qotd_channel(fctx, channel=text_ch))
+    await run_step("qotd_channel", qotd_set_channel(fctx, channel=text_ch))
     if role:
-        await run_step("qotd_ping_role", qotd_ping_role(fctx, role=role))
+        await run_step("qotd_ping_role", qotd_ping_role(fctx, action="set", role=role))
     await run_step("qotd_disable", qotd_disable(fctx))
 
-    # vc roles
     if voice_ch and role:
         await run_step("vc_role_link", vc_role_link(fctx, channel=voice_ch, role=role))
         await run_step("vc_role_list", vc_role_list(fctx))
@@ -2884,7 +2841,6 @@ async def test_all(ctx):
     else:
         results.append("⚠️ vc_role_* skipped (no voice channel or no role found)")
 
-    # Final report
     report = "\n".join(results)
     if len(report) > 1900:
         report = report[:1900] + "\n...[truncated]"
@@ -2912,7 +2868,6 @@ async def _update_guild_config(ctx, updates: dict, summary_label: str):
     cfg = await ensure_guild_config(ctx.guild)
     cfg.update(updates)
 
-    # keep in-memory cache in sync
     global guild_configs
     guild_configs[ctx.guild.id] = cfg
 
@@ -3007,7 +2962,6 @@ async def setup(ctx):
         return await ctx.respond("Admin only.", ephemeral=True)
 
     view = SetupPagerView()
-    # active_page is None by default, so both buttons stay gray
     view.refresh_button_styles()
     embed = view.make_home_embed()
 
@@ -3229,14 +3183,12 @@ async def qotd_ping_role(
         required=False
     ) = None,
 ):
-    # Admin / owner check
     if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
         return await ctx.respond("Admin only.", ephemeral=True)
 
     if db_pool is None:
         return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
 
-    # SET: store the chosen role id in ping_role_id
     if action == "set":
         if role is None:
             return await ctx.respond("You must pick a role when using `set`.", ephemeral=True)
@@ -3258,7 +3210,6 @@ async def qotd_ping_role(
             ephemeral=True,
         )
 
-    # CLEAR: set ping_role_id back to 0 (no pings)
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
@@ -3342,7 +3293,7 @@ async def theme_mode(
             "Theme mode set to **halloween**.\n"
             "The scheduler will keep applying Halloween roles/emojis/icons, even outside October."
         )
-    else:  # christmas
+    else:
         msg = (
             "Theme mode set to **christmas**.\n"
             "The scheduler will keep applying Christmas roles/emojis/icons, even outside December."
@@ -3577,7 +3528,7 @@ async def prize_announce(
     dead_role_id = cfg.get("dead_chat_role_id", 0)
     dead_role = guild.get_role(dead_role_id)
     role_mention = dead_role.mention if dead_role else "the Dead Chat role"
-    text = cfg.get("prize_announce_text") or DEFAULT_PRIZE_ANNOUNCE_MESSAGE)
+    text = cfg.get("prize_announce_text") or DEFAULT_PRIZE_ANNOUNCE_MESSAGE
     msg = text.format(
         winner=member.mention,
         gift=prize,
