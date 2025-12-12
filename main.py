@@ -1236,63 +1236,93 @@ class SetupPagerView(discord.ui.View):
     def make_commands_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="Admin Bot Setup Checklist",
-            description="Commands grouped by feature. Fields are shown in a 3-column grid.",
+            description="Run these commands to configure all features.",
             color=discord.Color.blurple(),
         )
 
         embed.add_field(
             name="CHANNELS",
-            value="Set where things are posted.",
+            value=(
+                "> `/welcome_channel` - Set the welcome channel.\n"
+                "> `/birthday_announce_channel` - Set birthday announcements.\n"
+                "> `/twitch_stream_channel` - Set Twitch live alerts.\n"
+                "> `/deadchat_trigger_channels` - Add Dead Chat channels.\n"
+                "> `/prize_announce_channel` - Set prize announcement channel.\n"
+                "> `/prize_channel` - Set prize drop channel.\n"
+                "> `/log_channel_members` - Set member log channel.\n"
+                "> `/log_channel_bots` - Set bot log channel.\n"
+                "> `/auto_delete_channel` - Add auto-delete channels."
+            ),
             inline=False,
         )
-
-        embed.add_field(name="**/welcome_channel**", value="Welcome channel", inline=True)
-        embed.add_field(name="**/birthday_announce_channel**", value="Birthday channel", inline=True)
-        embed.add_field(name="**/twitch_stream_channel**", value="Twitch alerts", inline=True)
-
-        embed.add_field(name="**/deadchat_trigger_channels**", value="Dead Chat channels", inline=True)
-        embed.add_field(name="**/prize_announce_channel**", value="Prize announce", inline=True)
-        embed.add_field(name="**/prize_channel**", value="Prize drops", inline=True)
-
-        embed.add_field(name="**/log_channel_members**", value="Member logs", inline=True)
-        embed.add_field(name="**/log_channel_bots**", value="Bot logs", inline=True)
-        embed.add_field(name="**/auto_delete_channel**", value="Auto-delete channels", inline=True)
 
         embed.add_field(
             name="ROLES",
-            value="Control who gets which roles.",
+            value=(
+                "> `/active_member_role` - Role for active members.\n"
+                "> `/birthday_role` - Role for birthdays.\n"
+                "> `/deadchat_role` - Dead Chat holder role.\n"
+                "> `/plague_role` - Plague infection role.\n"
+                "> `/member_join_role` - Auto-assign on member join.\n"
+                "> `/bot_join_role` - Auto-assign on bot join."
+            ),
             inline=False,
         )
-
-        embed.add_field(name="**/active_member_role**", value="Active members", inline=True)
-        embed.add_field(name="**/birthday_role**", value="Birthday role", inline=True)
-        embed.add_field(name="**/deadchat_role**", value="Dead Chat holder", inline=True)
-
-        embed.add_field(name="**/plague_role**", value="Plague role", inline=True)
-        embed.add_field(name="**/member_join_role**", value="New member role", inline=True)
-        embed.add_field(name="**/bot_join_role**", value="New bot role", inline=True)
 
         embed.add_field(
             name="TEXT & MESSAGES",
-            value="Short templates for bot messages.",
+            value=(
+                "> `/birthday_msg` - Set birthday message text.\n"
+                "> `/twitch_msg` - Set Twitch alert text.\n"
+                "> `/plague_msg` - Set plague alert text.\n"
+                "> `/sticky_message` - Set or clear sticky messages."
+            ),
             inline=False,
         )
-
-        embed.add_field(name="**/birthday_msg**", value="Birthday text", inline=True)
-        embed.add_field(name="**/twitch_msg**", value="Twitch live text", inline=True)
-        embed.add_field(name="**/plague_msg**", value="Plague text", inline=True)
-        embed.add_field(name="**/sticky_message**", value="Sticky in channel", inline=True)
 
         embed.add_field(
             name="AUTO DELETE",
-            value="Control cleanup behaviour.",
+            value=(
+                "> `/auto_delete_delay` - Set deletion delay.\n"
+                "> `/auto_delete_filters` - Add ignore phrases."
+            ),
             inline=False,
         )
 
-        embed.add_field(name="**/auto_delete_delay**", value="Delete delay", inline=True)
-        embed.add_field(name="**/auto_delete_filters**", value="Ignore phrases", inline=True)
+        embed.add_field(
+            name="TWITCH & ACTIVITY",
+            value=(
+                "> `/twitch_channel` - Add a Twitch channel.\n"
+                "> `/active_member_role_add` - Mark a user active."
+            ),
+            inline=False,
+        )
 
-        embed.set_footer(text="Use the buttons below to switch between Features and Commands.")
+        embed.add_field(
+            name="PRIZES & DEADCHAT",
+            value=(
+                "> `/prize_add` - Add a prize.\n"
+                "> `/prize_day` - Schedule or drop a prize.\n"
+                "> `/prize_announce_send` - Announce a winner.\n"
+                "> `/prize_list` - View scheduled prizes.\n"
+                "> `/prize_delete` - Remove a prize.\n"
+                "> `/plague_day` - Schedule a plague day.\n"
+                "> `/deadchat_scan` - Refresh Dead Chat timestamps."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="UTILITY",
+            value=(
+                "> `/send_msg` - Make the bot send a message.\n"
+                "> `/edit_msg` - Edit a bot message.\n"
+                "> `/birthday_announce_send` - Send a birthday message."
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="Use the buttons below to switch pages.")
         return embed
 
     @discord.ui.button(label="Features", style=discord.ButtonStyle.primary, custom_id="setup_features")
@@ -1304,6 +1334,7 @@ class SetupPagerView(discord.ui.View):
     async def commands_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         embed = self.make_commands_embed()
         await interaction.response.edit_message(embed=embed, view=self)
+
 
 ############### AUTOCOMPLETE FUNCTIONS ###############
 
