@@ -1180,59 +1180,69 @@ class SetupPagerView(discord.ui.View):
         embed.set_footer(text="Admin-only • /setup")
         return embed
 
-    def make_features_embed(self) -> discord.Embed:
-        embed = discord.Embed(
-            title="Admin Bot Features",
-            description="Overview of what this bot does for your server.",
-            color=discord.Color.blurple(),
-        )
+def make_features_embed(self) -> discord.Embed:
+    embed = discord.Embed(
+        title="Admin Bot Features",
+        description="Overview of what this bot does for your server.",
+        color=discord.Color.blurple(),
+    )
 
-        embed.add_field(
-            name="Onboarding & Roles",
-            value=(
-                "• Welcome messages for new members\n"
-                "• Delayed member join roles\n"
-                "• Auto roles for bots\n"
-                "• Birthday role + birthday announcements"
-            ),
-            inline=False,
-        )
+    embed.add_field(
+        name="Onboarding & Roles",
+        value=(
+            "• Welcome messages for new members\n"
+            "• Delayed member join roles\n"
+            "• Auto roles for bots\n"
+            "• Birthday role + birthday announcements"
+        ),
+        inline=False,
+    )
 
-        embed.add_field(
-            name="Dead Chat, Plague & Prizes",
-            value=(
-                "• Dead Chat idle tracking & role steals\n"
-                "• Monthly plague days (infection role)\n"
-                "• Scheduled prize drops linked to Dead Chat\n"
-                "• Prize buttons with claim + announce flow"
-            ),
-            inline=False,
-        )
+    embed.add_field(
+        name="Dead Chat, Plague & Prizes",
+        value=(
+            "• Dead Chat idle tracking & role steals\n"
+            "• Monthly plague days (infection role)\n"
+            "• Scheduled prize drops linked to Dead Chat\n"
+            "• Prize buttons with claim + announce flow"
+        ),
+        inline=False,
+    )
 
-        embed.add_field(
-            name="Activity & Cleanup",
-            value=(
-                "• Tracks last activity per member\n"
-                "• Active role for engaged members\n"
-                "• Auto-delete channels with ignore phrases\n"
-                "• Sticky messages that stay on top"
-            ),
-            inline=False,
-        )
+    embed.add_field(
+        name="Activity & Cleanup",
+        value=(
+            "• Tracks last activity per member\n"
+            "• Active role for engaged members\n"
+            "• Auto-delete channels with ignore phrases\n"
+            "• Sticky messages that stay on top"
+        ),
+        inline=False,
+    )
 
-        embed.add_field(
-            name="Twitch & Logging",
-            value=(
-                "• Watch multiple Twitch channels\n"
-                "• Live notifications with custom text\n"
-                "• Member join/leave/ban/kick logs\n"
-                "• Bot join/leave/ban logs"
-            ),
-            inline=False,
-        )
+    embed.add_field(
+        name="Twitch & Logging",
+        value=(
+            "• Watch multiple Twitch channels\n"
+            "• Live notifications with custom text\n"
+            "• Member join/leave/ban/kick logs\n"
+            "• Bot join/leave/ban logs"
+        ),
+        inline=False,
+    )
 
-        embed.set_footer(text="Use the buttons below to switch pages.")
-        return embed
+    embed.add_field(
+        name="Utility & Admin Tools",
+        value=(
+            "• `/send_msg` — send a custom bot message\n"
+            "• `/edit_msg` — edit existing bot messages"
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(text="Use the buttons below to switch pages.")
+    return embed
+
 
     def make_commands_embed(self) -> discord.Embed:
         embed = discord.Embed(
