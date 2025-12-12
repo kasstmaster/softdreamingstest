@@ -1222,10 +1222,10 @@ class SetupView(discord.ui.View):
 /`plague_role`
 - Role used when someone gets infected by the plague.
 
-/`add_role_member_join`
+/`member_join_role`
 - Role given to members after a short delay when they join.
 
-/`add_role_bot_join`
+/`bot_join_role`
 - Role given automatically to bots when they join.
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
@@ -1346,8 +1346,8 @@ ROLES:
 /birthday_role
 /deadchat_role
 /plague_role
-/add_role_member_join
-/add_role_bot_join
+/member_join_role
+/bot_join_role
 
 TEXT & MESSAGES:
 /birthday_msg
@@ -2183,14 +2183,14 @@ async def add_role_infected(ctx, role: discord.Option(discord.Role, required=Tru
     if cfg:
         await ctx.respond(f"Set infected role to {role.mention}", ephemeral=True)
 
-@bot.slash_command(name="add_role_member_join")
+@bot.slash_command(name="member_join_role")
 async def add_role_member_join(ctx, role: discord.Option(discord.Role, required=True)):
     updates = {"member_join_role_id": role.id}
     cfg = await _update_guild_config(ctx, updates, "member join role")
     if cfg:
         await ctx.respond(f"Set member join role to {role.mention}", ephemeral=True)
 
-@bot.slash_command(name="add_role_bot_join")
+@bot.slash_command(name="bot_join_role")
 async def add_role_bot_join(ctx, role: discord.Option(discord.Role, required=True)):
     updates = {"bot_join_role_id": role.id}
     cfg = await _update_guild_config(ctx, updates, "bot join role")
@@ -2229,7 +2229,7 @@ async def add_twitch_notification(ctx, twitch_channel: discord.Option(str, requi
     if notification_channel is None:
         announce_id = cfg.get("twitch_announce_channel_id", 0)
         if announce_id == 0:
-            await ctx.respond("Set default twitch announce channel first with /add_channel_twitch_announce.", ephemeral=True)
+            await ctx.respond("Set default twitch announce channel first with /twitch_stream_channel.", ephemeral=True)
             return
     else:
         announce_id = notification_channel.id
