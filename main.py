@@ -1779,14 +1779,14 @@ async def config_db_show(ctx):
 
 @bot.slash_command(
     name="setup",
-    description="Show the full Soft Dreamings bot setup."
+    description="Show the full Admin Bot setup checklist."
 )
 async def setup(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
 
     embed = discord.Embed(
-        title="Soft Dreamings Bot Setup",
+        title="Admin Bot Setup Checklist",
         description="Run these commands to fully configure the bot.",
         color=discord.Color.blurple(),
     )
@@ -1794,15 +1794,15 @@ async def setup(ctx):
     embed.add_field(
         name="CHANNELS",
         value=(
-            "`/welcome_channel` - Set the default welcome channel for new members.\n"
-            "`/birthday_announce_channel` - Set the channel where birthday messages are posted.\n"
-            "`/twitch_stream_channel` - Set the default channel for Twitch live notifications.\n"
-            "`/deadchat_trigger_channels` - Add a channel that counts for Dead Chat steals.\n"
-            "`/prize_announce_channel` - Set the channel where prize wins are announced.\n"
-            "`/prize_channel` - Set the channel where prize drops appear.\n"
-            "`/log_channel_members` - Set the member join/leave/ban/kick log channel.\n"
-            "`/log_channel_bots` - Set the bot join/leave/ban log channel.\n"
-            "`/auto_delete_channel` - Add a channel to the auto-delete system."
+            "**/welcome_channel** - Set the default welcome channel for new members.\n"
+            "**/birthday_announce_channel** - Set the channel where birthday messages are posted.\n"
+            **"/twitch_stream_channel** - Set the default channel for Twitch live notifications.\n"
+            "**/deadchat_trigger_channels** - Add a channel that counts for Dead Chat steals.\n"
+            "**/prize_announce_channel** - Set the channel where prize wins are announced.\n"
+            "**/prize_channel** - Set the channel where prize drops appear.\n"
+            "**/log_channel_members** - Set the member join/leave/ban/kick log channel.\n"
+            "**/log_channel_bots** - Set the bot join/leave/ban log channel.\n"
+            "**/auto_delete_channel** - Add a channel to the auto-delete system."
         ),
         inline=False,
     )
@@ -1810,12 +1810,12 @@ async def setup(ctx):
     embed.add_field(
         name="ROLES",
         value=(
-            "`/active_member_role` - Set the role used for active members.\n"
-            "`/birthday_role` - Set the role used to mark birthdays.\n"
-            "`/deadchat_role` - Set the role given to the current Dead Chat holder.\n"
-            "`/plague_role` - Set the role used for plague infections.\n"
-            "`/member_join_role` - Set the role given to members after a short delay.\n"
-            "`/bot_join_role` - Set the role given automatically to new bots."
+            "**/active_member_role** - Set the role used for active members.\n"
+            "**/birthday_role** - Set the role used to mark birthdays.\n"
+            "**/deadchat_role** - Set the role given to the current Dead Chat holder.\n"
+            "**/plague_role** - Set the role used for plague infections.\n"
+            "**/member_join_role** - Set the role given to members after a short delay.\n"
+            "**/bot_join_role** - Set the role given automatically to new bots."
         ),
         inline=False,
     )
@@ -1823,10 +1823,10 @@ async def setup(ctx):
     embed.add_field(
         name="TEXT & MESSAGES",
         value=(
-            "`/birthday_msg` - Set the birthday announcement template text.\n"
-            "`/twitch_msg` - Set the Twitch \"went live\" announcement template text.\n"
-            "`/plague_msg` - Set the plague outbreak announcement text.\n"
-            "`/sticky_message` - Set or clear a sticky message in this channel."
+            "**/birthday_msg** - Set the birthday announcement template text.\n"
+            "**/twitch_msg** - Set the Twitch \"went live\" announcement template text.\n"
+            "**/plague_msg** - Set the plague outbreak announcement text.\n"
+            "**/sticky_message** - Set or clear a sticky message in this channel."
         ),
         inline=False,
     )
@@ -1834,8 +1834,8 @@ async def setup(ctx):
     embed.add_field(
         name="AUTO DELETE",
         value=(
-            "`/auto_delete_delay` - Set how long messages last in auto-delete channels (seconds).\n"
-            "`/auto_delete_filters` - Add a phrase that never gets auto-deleted."
+            "**/auto_delete_delay** - Set how long messages last in auto-delete channels (seconds).\n"
+            "**/auto_delete_filters** - Add a phrase that never gets auto-deleted."
         ),
         inline=False,
     )
@@ -1843,8 +1843,8 @@ async def setup(ctx):
     embed.add_field(
         name="TWITCH & ACTIVITY",
         value=(
-            "`/twitch_channel` - Add a Twitch channel and where its live announcements go.\n"
-            "`/active_member_role_add` - Mark a member as active right now (gives active role)."
+            "**/twitch_channel** - Add a Twitch channel and where its live announcements go.\n"
+            "**/active_member_role_add** - Mark a member as active right now (gives active role)."
         ),
         inline=False,
     )
@@ -1852,13 +1852,13 @@ async def setup(ctx):
     embed.add_field(
         name="PRIZES & DEADCHAT",
         value=(
-            "`/prize_add` - Define a prize title and its drop rarity.\n"
-            "`/prize_day` - Schedule or instantly drop a Dead Chat prize.\n"
-            "`/prize_announce_send` - Manually announce a Dead Chat prize winner.\n"
-            "`/prize_list` - View all scheduled Dead Chat prize drops.\n"
-            "`/prize_delete` - Delete a scheduled prize drop by ID.\n"
-            "`/plague_day` - Schedule a plague day; first Dead Chat steal gets infected.\n"
-            "`/deadchat_scan` - Scan Dead Chat channels and refresh idle timestamps."
+            "**/prize_add** - Define a prize title and its drop rarity.\n"
+            "**/prize_day** - Schedule or instantly drop a Dead Chat prize.\n"
+            "**/prize_announce_send** - Manually announce a Dead Chat prize winner.\n"
+            "**/prize_list** - View all scheduled Dead Chat prize drops.\n"
+            "**/prize_delete** - Delete a scheduled prize drop by ID.\n"
+            "**/plague_day** - Schedule a plague day; first Dead Chat steal gets infected.\n"
+            "**/deadchat_scan** - Scan Dead Chat channels and refresh idle timestamps."
         ),
         inline=False,
     )
@@ -1866,17 +1866,17 @@ async def setup(ctx):
     embed.add_field(
         name="UTILITY",
         value=(
-            "`/send_msg` - Make the bot send a custom message in this channel.\n"
-            "`/edit_msg` - Edit a bot message in this channel by ID.\n"
-            "`/birthday_announce_send` - Manually send a birthday message for a member."
+            "**/send_msg** - Make the bot send a custom message in this channel.\n"
+            "**/edit_msg** - Edit a bot message in this channel by ID.\n"
+            "**/birthday_announce_send** - Manually send a birthday message for a member."
         ),
         inline=False,
     )
 
     embed.set_footer(text="Admin-only • Use this as your full setup checklist")
 
-    # ephemeral=True = only the admin sees it. Remove ephemeral=True if you want it public.
     await ctx.respond(embed=embed, ephemeral=True)
+    
 
 @bot.slash_command(
     name="birthday_announce_send",
