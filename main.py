@@ -1779,14 +1779,14 @@ async def config_db_show(ctx):
 
 @bot.slash_command(
     name="setup",
-    description="Show the full Admin Bot setup checklist."
+    description="Show the full Soft Dreamings bot setup."
 )
 async def setup(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
 
     embed = discord.Embed(
-        title="Admin Bot Setup Checklist",
+        title="Soft Dreamings Bot Setup",
         description="Run these commands to fully configure the bot.",
         color=discord.Color.blurple(),
     )
