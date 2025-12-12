@@ -167,210 +167,210 @@ async def init_db():
     return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
 
     async with db_pool.acquire() as conn:
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS guild_configs (
-            guild_id BIGINT PRIMARY KEY,
-            welcome_channel_id BIGINT DEFAULT 0,
-            birthday_role_id BIGINT DEFAULT 0,
-            member_join_role_id BIGINT DEFAULT 0,
-            bot_join_role_id BIGINT DEFAULT 0,
-            dead_chat_role_id BIGINT DEFAULT 0,
-            infected_role_id BIGINT DEFAULT 0,
-            active_role_id BIGINT DEFAULT 0,
-            dead_chat_channel_ids TEXT DEFAULT '[]',
-            auto_delete_channel_ids TEXT DEFAULT '[]',
-            mod_log_channel_id BIGINT DEFAULT 0,
-            bot_log_channel_id BIGINT DEFAULT 0,
-            prize_drop_channel_id BIGINT DEFAULT 0,
-            birthday_announce_channel_id BIGINT DEFAULT 0,
-            twitch_announce_channel_id BIGINT DEFAULT 0,
-            prize_announce_channel_id BIGINT DEFAULT 0,
-            auto_delete_delay_seconds INTEGER DEFAULT 0,
-            auto_delete_ignore_phrases TEXT DEFAULT '[]',
-            twitch_configs TEXT DEFAULT '[]',
-            prize_defs TEXT DEFAULT '{}',
-            prize_scheduled TEXT DEFAULT '[]',
-            plague_scheduled TEXT DEFAULT '[]',
-            infected_members TEXT DEFAULT '{}',
-            birthday_text TEXT,
-            twitch_live_text TEXT,
-            plague_outbreak_text TEXT,
-            deadchat_steal_text TEXT,
-            prize_announce_text TEXT,
-            prize_claim_text TEXT
-        );
-        """)
-
         await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS birthday_announce_channel_id BIGINT DEFAULT 0;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS twitch_announce_channel_id BIGINT DEFAULT 0;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS prize_announce_channel_id BIGINT DEFAULT 0;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT DEFAULT 0;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS mod_log_channel_id BIGINT DEFAULT 0;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS bot_log_channel_id BIGINT DEFAULT 0;
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS sticky_data (
-            channel_id BIGINT PRIMARY KEY,
-            text TEXT,
-            message_id BIGINT
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS qotd_settings (
-            guild_id BIGINT PRIMARY KEY,
-            channel_id BIGINT DEFAULT 0,
-            enabled BOOLEAN NOT NULL DEFAULT FALSE,
-            ping_role_id BIGINT DEFAULT 0
-        );
-        """)
-
-        await conn.execute("""
-        ALTER TABLE qotd_settings
-        ADD COLUMN IF NOT EXISTS ping_role_id BIGINT DEFAULT 0;
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS theme_settings (
-            guild_id BIGINT PRIMARY KEY,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            mode TEXT NOT NULL DEFAULT 'auto'
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS vc_role_links (
-            guild_id BIGINT NOT NULL,
-            channel_id BIGINT NOT NULL,
-            role_id BIGINT NOT NULL,
-            PRIMARY KEY (guild_id, channel_id)
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS birthdays (
-            guild_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            mm_dd TEXT NOT NULL,
-            PRIMARY KEY (guild_id, user_id)
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS birthday_public_messages (
-            guild_id BIGINT PRIMARY KEY,
-            channel_id BIGINT NOT NULL,
-            message_id BIGINT NOT NULL
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS deadchat_last_times (
-            channel_id BIGINT PRIMARY KEY,
-            last_time TIMESTAMPTZ NOT NULL
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS deadchat_state (
-            guild_id BIGINT PRIMARY KEY,
-            current_holders JSONB DEFAULT '{}'::jsonb,
-            last_win_times JSONB DEFAULT '{}'::jsonb,
-            notice_msg_ids JSONB DEFAULT '{}'::jsonb
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS twitch_state (
-            username TEXT PRIMARY KEY,
-            is_live BOOLEAN NOT NULL DEFAULT FALSE
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS last_activity (
-            guild_id BIGINT NOT NULL,
-            member_id BIGINT NOT NULL,
-            last_seen TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (guild_id, member_id)
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS member_join_queue (
-            guild_id BIGINT NOT NULL,
-            member_id BIGINT NOT NULL,
-            assign_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (guild_id, member_id)
-        );
-        """)
-
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS prize_claim_text TEXT;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS prize_announce_text TEXT;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS deadchat_steal_text TEXT;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS plague_outbreak_text TEXT;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS twitch_live_text TEXT;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS birthday_text TEXT;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS infected_members TEXT DEFAULT '{}';
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS plague_scheduled TEXT DEFAULT '[]';
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS prize_scheduled TEXT DEFAULT '[]';
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS prize_defs TEXT DEFAULT '{}';
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS twitch_configs TEXT DEFAULT '[]';
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS auto_delete_ignore_phrases TEXT DEFAULT '[]';
-        """)
+            CREATE TABLE IF NOT EXISTS guild_configs (
+                guild_id BIGINT PRIMARY KEY,
+                welcome_channel_id BIGINT DEFAULT 0,
+                birthday_role_id BIGINT DEFAULT 0,
+                member_join_role_id BIGINT DEFAULT 0,
+                bot_join_role_id BIGINT DEFAULT 0,
+                dead_chat_role_id BIGINT DEFAULT 0,
+                infected_role_id BIGINT DEFAULT 0,
+                active_role_id BIGINT DEFAULT 0,
+                dead_chat_channel_ids TEXT DEFAULT '[]',
+                auto_delete_channel_ids TEXT DEFAULT '[]',
+                mod_log_channel_id BIGINT DEFAULT 0,
+                bot_log_channel_id BIGINT DEFAULT 0,
+                prize_drop_channel_id BIGINT DEFAULT 0,
+                birthday_announce_channel_id BIGINT DEFAULT 0,
+                twitch_announce_channel_id BIGINT DEFAULT 0,
+                prize_announce_channel_id BIGINT DEFAULT 0,
+                auto_delete_delay_seconds INTEGER DEFAULT 0,
+                auto_delete_ignore_phrases TEXT DEFAULT '[]',
+                twitch_configs TEXT DEFAULT '[]',
+                prize_defs TEXT DEFAULT '{}',
+                prize_scheduled TEXT DEFAULT '[]',
+                plague_scheduled TEXT DEFAULT '[]',
+                infected_members TEXT DEFAULT '{}',
+                birthday_text TEXT,
+                twitch_live_text TEXT,
+                plague_outbreak_text TEXT,
+                deadchat_steal_text TEXT,
+                prize_announce_text TEXT,
+                prize_claim_text TEXT
+            );
+            """)
+    
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS birthday_announce_channel_id BIGINT DEFAULT 0;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS twitch_announce_channel_id BIGINT DEFAULT 0;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS prize_announce_channel_id BIGINT DEFAULT 0;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT DEFAULT 0;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS mod_log_channel_id BIGINT DEFAULT 0;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS bot_log_channel_id BIGINT DEFAULT 0;
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS sticky_data (
+                channel_id BIGINT PRIMARY KEY,
+                text TEXT,
+                message_id BIGINT
+            );
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS qotd_settings (
+                guild_id BIGINT PRIMARY KEY,
+                channel_id BIGINT DEFAULT 0,
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                ping_role_id BIGINT DEFAULT 0
+            );
+            """)
+    
+            await conn.execute("""
+            ALTER TABLE qotd_settings
+            ADD COLUMN IF NOT EXISTS ping_role_id BIGINT DEFAULT 0;
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS theme_settings (
+                guild_id BIGINT PRIMARY KEY,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                mode TEXT NOT NULL DEFAULT 'auto'
+            );
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS vc_role_links (
+                guild_id BIGINT NOT NULL,
+                channel_id BIGINT NOT NULL,
+                role_id BIGINT NOT NULL,
+                PRIMARY KEY (guild_id, channel_id)
+            );
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS birthdays (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                mm_dd TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            );
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS birthday_public_messages (
+                guild_id BIGINT PRIMARY KEY,
+                channel_id BIGINT NOT NULL,
+                message_id BIGINT NOT NULL
+            );
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS deadchat_last_times (
+                channel_id BIGINT PRIMARY KEY,
+                last_time TIMESTAMPTZ NOT NULL
+            );
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS deadchat_state (
+                guild_id BIGINT PRIMARY KEY,
+                current_holders JSONB DEFAULT '{}'::jsonb,
+                last_win_times JSONB DEFAULT '{}'::jsonb,
+                notice_msg_ids JSONB DEFAULT '{}'::jsonb
+            );
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS twitch_state (
+                username TEXT PRIMARY KEY,
+                is_live BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS last_activity (
+                guild_id BIGINT NOT NULL,
+                member_id BIGINT NOT NULL,
+                last_seen TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (guild_id, member_id)
+            );
+            """)
+    
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS member_join_queue (
+                guild_id BIGINT NOT NULL,
+                member_id BIGINT NOT NULL,
+                assign_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (guild_id, member_id)
+            );
+            """)
+    
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS prize_claim_text TEXT;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS prize_announce_text TEXT;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS deadchat_steal_text TEXT;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS plague_outbreak_text TEXT;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS twitch_live_text TEXT;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS birthday_text TEXT;
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS infected_members TEXT DEFAULT '{}';
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS plague_scheduled TEXT DEFAULT '[]';
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS prize_scheduled TEXT DEFAULT '[]';
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS prize_defs TEXT DEFAULT '{}';
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS twitch_configs TEXT DEFAULT '[]';
+            """)
+            await conn.execute("""
+            ALTER TABLE guild_configs
+            ADD COLUMN IF NOT EXISTS auto_delete_ignore_phrases TEXT DEFAULT '[]';
+            """)
 
 async def run_migrations(conn):
     await conn.execute("""
@@ -2595,8 +2595,11 @@ async def activity_inactive_watcher():
 ############### EVENT HANDLERS ###############
 @bot.event
 async def on_ready():
+    await init_db()  # FIRST
+
     print(f"{bot.user} is online!")
-    await init_db()
+    print(f"Logged in as {bot.user}")
+
     await run_all_inits_with_logging()
     await initialize_dead_chat()
 
