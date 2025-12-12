@@ -19,11 +19,15 @@
 import os
 import asyncio
 import asyncpg
+import discord
+from discord.ext import commands
 
 ############### CONSTANTS & CONFIG ###############
 DATABASE_URL = os.getenv("DATABASE_URL")
+TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 
 ############### GLOBAL STATE / STORAGE ###############
+db_pool = None
 
 ############### HELPER FUNCTIONS ###############
 GUILD_SETTINGS_SQL = """
@@ -44,15 +48,20 @@ CREATE TABLE IF NOT EXISTS guild_settings (
 );
 """
 
-async def ensure_schema():
+async def init_db():
+    global db_pool
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is missing")
-    conn = await asyncpg.connect(DATABASE_URL)
-    await conn.execute("SET TIME ZONE 'UTC';")
-    await conn.execute(GUILD_SETTINGS_SQL)
-    value = await conn.fetchval("SELECT 1;")
-    await conn.close()
-    print("✅ Schema ensured, SELECT 1 returned:", value)
+    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+    async with db_pool.acquire() as conn:
+        await conn.execute("SET TIME ZONE 'UTC';")
+        await conn.execute(GUILD_SETTINGS_SQL)
+
+async def close_db():
+    global db_pool
+    if db_pool is not None:
+        await db_pool.close()
+        db_pool = None
 
 ############### VIEWS / UI COMPONENTS ###############
 
@@ -63,8 +72,29 @@ async def ensure_schema():
 ############### EVENT HANDLERS ###############
 
 ############### COMMAND GROUPS ###############
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.tree.command(name="ping", description="Bot heartbeat")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message("pong ✅")
 
 ############### ON_READY & BOT START ###############
-if __name__ == "__main__":
-    asyncio.run(ensure_schema())
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    print(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
+async def runner():
+    if not TOKEN:
+        raise RuntimeError("DISCORD_TOKEN or TOKEN is missing")
+    await init_db()
+    try:
+        await bot.start(TOKEN)
+    finally:
+        await close_db()
+
+if __name__ == "__main__":
+    asyncio.run(runner())
