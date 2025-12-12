@@ -129,12 +129,16 @@ async def init_db():
     global db_pool
     if db_pool is not None:
         return
+
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         await log_to_bot_channel("@everyone DATABASE_URL is not set. Postgres not initialized.")
         return
+
     db_pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5)
+
     async with db_pool.acquire() as conn:
+        # Sticky messages
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS sticky_data (
             channel_id BIGINT PRIMARY KEY,
@@ -143,55 +147,7 @@ async def init_db():
         );
         """)
 
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS member_join_queue (
-            guild_id BIGINT,
-            member_id BIGINT,
-            assign_at TIMESTAMPTZ,
-            PRIMARY KEY (guild_id, member_id)
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS deadchat_last_times (
-            channel_id BIGINT PRIMARY KEY,
-            last_time TIMESTAMPTZ
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS deadchat_state (
-            guild_id BIGINT PRIMARY KEY,
-            current_holders JSONB,
-            last_win_times JSONB,
-            notice_msg_ids JSONB
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS twitch_state (
-            username TEXT PRIMARY KEY,
-            is_live BOOLEAN
-        );
-        """)
-
-                await conn.execute("""
-        CREATE TABLE IF NOT EXISTS birthdays (
-            guild_id BIGINT,
-            user_id BIGINT,
-            mm_dd TEXT NOT NULL,
-            PRIMARY KEY (guild_id, user_id)
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS birthday_public_messages (
-            guild_id BIGINT PRIMARY KEY,
-            channel_id BIGINT,
-            message_id BIGINT
-        );
-        """)
-
+        # QOTD settings (with optional ping role)
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS qotd_settings (
             guild_id BIGINT PRIMARY KEY,
@@ -201,44 +157,10 @@ async def init_db():
         );
         """)
 
+        # Migration for older DBs that don't have ping_role_id yet
         await conn.execute("""
         ALTER TABLE qotd_settings
         ADD COLUMN IF NOT EXISTS ping_role_id BIGINT DEFAULT 0;
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS vc_role_links (
-            guild_id BIGINT,
-            channel_id BIGINT,
-            role_id BIGINT,
-            PRIMARY KEY (guild_id, channel_id)
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS last_activity (
-            guild_id BIGINT,
-            member_id BIGINT,
-            last_seen TIMESTAMPTZ,
-            PRIMARY KEY (guild_id, member_id)
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS vc_role_links (
-            guild_id BIGINT,
-            channel_id BIGINT,
-            role_id BIGINT,
-            PRIMARY KEY (guild_id, channel_id)
-        );
-        """)
-
-        await conn.execute("""
-        CREATE TABLE IF NOT EXISTS theme_settings (
-            guild_id BIGINT PRIMARY KEY,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            mode TEXT NOT NULL DEFAULT 'auto'  -- 'auto', 'none', 'halloween', 'christmas'
-        );
         """)
 
 async def get_theme_settings(guild_id: int) -> dict:
@@ -1100,6 +1022,7 @@ async def post_daily_qotd():
                 color=discord.Color.gold(),
             )
 
+            # Optional ping role
             ping_role_id = settings.get("ping_role_id", 0) or 0
             ping_role = guild.get_role(ping_role_id) if ping_role_id else None
 
@@ -1112,6 +1035,9 @@ async def post_daily_qotd():
                 )
             else:
                 await channel.send(embed=embed)
+
+        except Exception as e:
+            await log_exception(f"post_daily_qotd guild {guild.id}", e)
 
 
 async def get_guild_birthdays(guild_id: int) -> dict[str, str]:
@@ -1911,8 +1837,7 @@ class SetupPagerView(discord.ui.View):
         embed.set_footer(text="Use the buttons below to switch pages.")
         return embed
 
-
-        def make_commands_embed(self) -> discord.Embed:
+    def make_commands_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="Admin Bot Setup Checklist",
             description="Run these commands to configure all features.",
@@ -1990,9 +1915,7 @@ class SetupPagerView(discord.ui.View):
 
         embed.add_field(
             name="TWITCH",
-            value=(
-                "> `/twitch_channel` - Add a Twitch channel and announce target."
-            ),
+            value="> `/twitch_channel` - Add a Twitch channel and announce target.",
             inline=False,
         )
 
@@ -2342,7 +2265,7 @@ async def on_ready():
 
     await initialize_dead_chat()
 
-        for guild in bot.guilds:
+    for guild in bot.guilds:
         cfg = await ensure_guild_config(guild)
         plague_scheduled[guild.id] = cfg.get("plague_scheduled", [])
         infected_members[guild.id] = cfg.get("infected_members", {})
