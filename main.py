@@ -304,14 +304,19 @@ async def save_guild_config_db(guild: discord.Guild, cfg: dict):
             prize_claim_text
         )
 
-async def get_guild_config(guild: discord.Guild) -> dict | None:
+async def get_guild_config(guild: discord.Guild) -> dict:
     if not guild or db_pool is None:
-        return None
+        return {}
+
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM guild_configs WHERE guild_id = $1", guild.id)
+
     if not row:
-        return None
+        # No row yet — return empty config instead of None
+        return {}
+
     data = dict(row)
+
     if data.get("dead_chat_channel_ids"):
         try:
             data["dead_chat_channel_ids"] = [int(x) for x in json.loads(data["dead_chat_channel_ids"])]
@@ -319,6 +324,7 @@ async def get_guild_config(guild: discord.Guild) -> dict | None:
             data["dead_chat_channel_ids"] = []
     else:
         data["dead_chat_channel_ids"] = []
+
     if data.get("auto_delete_channel_ids"):
         try:
             data["auto_delete_channel_ids"] = [int(x) for x in json.loads(data["auto_delete_channel_ids"])]
@@ -326,6 +332,7 @@ async def get_guild_config(guild: discord.Guild) -> dict | None:
             data["auto_delete_channel_ids"] = []
     else:
         data["auto_delete_channel_ids"] = []
+
     data["auto_delete_ignore_phrases"] = json.loads(data.get("auto_delete_ignore_phrases") or "[]")
     data["twitch_configs"] = json.loads(data.get("twitch_configs") or "[]")
     data["prize_defs"] = json.loads(data.get("prize_defs") or "{}")
@@ -2041,56 +2048,19 @@ async def add_channel_prize_drop(ctx, channel: discord.Option(discord.TextChanne
     if cfg:
         await ctx.respond(f"Set prize drop channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="add_channel_auto_delete", description="Add an auto-delete channel and optional filters")
-async def add_channel_auto_delete(
-    ctx,
-    channel: discord.Option(discord.TextChannel, "Channel to auto-delete in", required=True),
-    delete_after_seconds: discord.Option(int, "Delete messages after this many seconds", required=False),
-    ignore_phrases: discord.Option(str, "Comma-separated phrases to ignore", required=False),
-):
-    # _update_guild_config already enforces admin, but this keeps behavior consistent:
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-
-    cfg = await get_guild_config(ctx.guild) or {}
+@bot.slash_command(name="add_channel_auto_delete")
+async def add_channel_auto_delete(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+    cfg = await ensure_guild_config(ctx.guild)
     ids = cfg.get("auto_delete_channel_ids", [])
-    already = channel.id in ids
-
-    if not already:
-        ids.append(channel.id)
-
-    updates: dict = {"auto_delete_channel_ids": ids}
-
-    # Optional: override delay for this guild
-    if delete_after_seconds is not None:
-        updates["auto_delete_delay_seconds"] = delete_after_seconds
-
-    # Optional: add ignore phrases (merged with existing)
-    if ignore_phrases:
-        existing = cfg.get("auto_delete_ignore_phrases") or []
-        new_list = [p.strip() for p in ignore_phrases.split(",") if p.strip()]
-        for phrase in new_list:
-            if phrase not in existing:
-                existing.append(phrase)
-        updates["auto_delete_ignore_phrases"] = existing
-
-    new_cfg = await _update_guild_config(ctx, updates, "auto delete channel/filters")
-    if not new_cfg:
+    if channel.id in ids:
+        await ctx.respond("Already added.", ephemeral=True)
         return
 
-    parts = []
-    if not already:
-        parts.append(f"Added {channel.mention} to auto delete channels.")
-    else:
-        parts.append(f"Updated auto delete settings for {channel.mention}.")
-
-    if delete_after_seconds is not None:
-        parts.append(f"Delete after **{delete_after_seconds}** seconds.")
-
-    if ignore_phrases:
-        parts.append(f"Ignoring: `{ignore_phrases}`")
-
-    await ctx.respond(" ".join(parts), ephemeral=True)
+    ids.append(channel.id)
+    updates = {"auto_delete_channel_ids": ids}
+    new_cfg = await _update_guild_config(ctx, updates, "auto delete channel")
+    if new_cfg:
+        await ctx.respond(f"Added {channel.mention} to auto delete channels.", ephemeral=True)
 
 @bot.slash_command(name="add_role_active")
 async def add_role_active(ctx, role: discord.Option(discord.Role, required=True)):
