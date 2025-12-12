@@ -2638,15 +2638,23 @@ async def on_member_remove(member: discord.Member):
         await log_to_guild_mod_log(guild, text)
 
 @bot.event
-async def on_application_command_error(interaction: discord.Interaction, error):
-    await log_exception("application_command_error", error)
+async def on_application_command_error(ctx, error):
+    tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    print("[SLASH ERROR]", repr(error))
+    print(tb)
+
     try:
-        if interaction.response.is_done():
-            await interaction.followup.send("An internal error occurred.", ephemeral=True)
-        else:
-            await interaction.response.send_message("An internal error occurred.", ephemeral=True)
-    except:
-        pass
+        # Pycord ApplicationContext usually supports respond()
+        await ctx.respond(f"An internal error occurred.\n```{repr(error)}```", ephemeral=True)
+    except Exception:
+        try:
+            # If ctx is actually an Interaction
+            if hasattr(ctx, "response") and not ctx.response.is_done():
+                await ctx.response.send_message(f"An internal error occurred.\n```{repr(error)}```", ephemeral=True)
+            elif hasattr(ctx, "followup"):
+                await ctx.followup.send(f"An internal error occurred.\n```{repr(error)}```", ephemeral=True)
+        except Exception:
+            pass
 
 @bot.event
 async def on_error(event, *args, **kwargs):
