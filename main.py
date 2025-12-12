@@ -21,8 +21,6 @@ intents.voice_states = True
 DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID", "0"))
 bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 
-STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", "0"))
-
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 
@@ -53,7 +51,6 @@ GAME_NOTIF_REMOVED_PREFIX = "Removed: "
 
 ############### GLOBAL STATE / STORAGE ###############
 guild_configs: dict[int, dict] = {}
-guild_config_storage_message_id: int | None = None
 db_pool: asyncpg.Pool | None = None
 
 twitch_access_token: str | None = None
@@ -153,39 +150,6 @@ async def init_db():
             PRIMARY KEY (guild_id, member_id)
         );
         """)
-
-async def init_guild_config_storage():
-    global guild_config_storage_message_id, guild_configs
-    msg = await find_storage_message("CONFIG_DATA:")
-    if not msg:
-        return
-    guild_config_storage_message_id = msg.id
-    raw = msg.content[len("CONFIG_DATA:"):]
-    if not raw.strip():
-        guild_configs = {}
-        return
-    try:
-        data = json.loads(raw)
-        guild_configs = {int(gid): cfg for gid, cfg in data.items()}
-        await log_to_bot_channel(f"[CONFIG] Loaded config for {len(guild_configs)} guild(s).")
-    except Exception as e:
-        guild_configs = {}
-        await log_to_bot_channel(f"init_guild_config_storage failed: {e}")
-
-async def init_guild_config_storage():
-    """Postgres-only mode: nothing to load from Discord storage."""
-    global guild_configs, guild_config_storage_message_id
-    guild_configs = {}
-    guild_config_storage_message_id = None
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        return
-    payload = {str(gid): cfg for gid, cfg in guild_configs.items()}
-    try:
-        msg = await ch.fetch_message(guild_config_storage_message_id)
-        await msg.edit(content="CONFIG_DATA:" + json.dumps(payload))
-    except Exception as e:
-        await log_to_bot_channel(f"save_guild_config_storage failed: {e}")
 
 async def save_guild_config_db(guild: discord.Guild, cfg: dict):
     if db_pool is None:
@@ -374,18 +338,6 @@ async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None
         return None
     return guild.get_role(rid)
 
-async def debug_scan_storage_channel(limit: int = 20) -> str:
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return "Storage channel not found."
-    lines = []
-    async for msg in ch.history(limit=limit, oldest_first=True):
-        prefix = msg.content[:40].replace("\n", "\\n")
-        lines.append(f"id={msg.id} author={msg.author.id} bot={msg.author.bot} content={prefix}")
-    if not lines:
-        return "No messages visible in storage channel."
-    return "\n".join(lines)
-
 async def log_to_guild_mod_log(guild: discord.Guild, content: str):
     ch = await get_config_channel(guild, "mod_log_channel_id")
     if not ch:
@@ -525,7 +477,6 @@ async def check_runtime_systems():
             fail(key, f"{label}: missing Read Message History")
         if need_manage and not perms.manage_messages:
             fail(key, f"{label}: missing Manage Messages")
-    check_channel_permissions(STORAGE_CHANNEL_ID, "STORAGE_CHANNEL", "CHANNELS", need_manage=True)
     check_channel_permissions(cfg.get("welcome_channel_id", 0), "WELCOME_CHANNEL", "CHANNELS")
     check_channel_permissions(cfg.get("bot_log_channel_id", 0), "BOT_LOG_CHANNEL", "CHANNELS")
     check_channel_permissions(cfg.get("twitch_announce_channel_id", 0), "TWITCH_ANNOUNCE_CHANNEL", "CHANNELS")
@@ -673,24 +624,6 @@ async def run_all_inits_with_logging():
         await log_to_bot_channel(f"[STARTUP] {len(problems)} problems detected, see report above.")
     else:
         await log_to_bot_channel("[STARTUP] All systems passed storage and runtime checks.")
-
-async def find_storage_message(prefix: str) -> discord.Message | None:
-    if STORAGE_CHANNEL_ID == 0:
-        await log_to_bot_channel(f"find_storage_message: STORAGE_CHANNEL_ID is 0 for {prefix}")
-        return None
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        await log_to_bot_channel(f"find_storage_message: storage channel invalid for {prefix}")
-        return None
-    try:
-        async for msg in ch.history(limit=200, oldest_first=False):
-            if msg.content.startswith(prefix):
-                return msg
-    except Exception as e:
-        await log_to_bot_channel(f"find_storage_message error for {prefix}: {e}")
-        return None
-    await log_to_bot_channel(f"find_storage_message: no storage message found for {prefix}")
-    return None
 
 async def init_sticky_storage():
     global sticky_storage_message_id  # kept only so code compiles, but unused now
@@ -1588,53 +1521,12 @@ async def _update_guild_config(ctx, updates: dict, summary_label: str):
     global guild_configs
     guild_configs[ctx.guild.id] = cfg
 
-    await save_guild_config_storage()
     await save_guild_config_db(ctx.guild, cfg)
     await log_to_guild_bot_channel(ctx.guild, f"[CONFIG] {ctx.author.mention} updated {summary_label}.")
     if "twitch_configs" in updates:
         for tc in cfg.get("twitch_configs", []):
             all_twitch_channels.add(tc["username"].lower())
     return cfg
-
-@bot.slash_command(name="storage_debug", description="Show storage message IDs for all systems")
-async def storage_debug(
-    ctx,
-):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    lines = [
-        f"STORAGE_CHANNEL_ID: {STORAGE_CHANNEL_ID}",
-        f"sticky_storage_message_id: {sticky_storage_message_id}",
-        f"member_join_storage_message_id: {member_join_storage_message_id}",
-        f"deadchat_storage_message_id: {deadchat_storage_message_id}",
-        f"deadchat_state_storage_message_id: {deadchat_state_storage_message_id}",
-        f"twitch_state_storage_message_id: {twitch_state_storage_message_id}",
-    ]
-    await ctx.respond("Storage debug:\n" + "\n".join(lines), ephemeral=True)
-
-@bot.slash_command(name="storage_scan", description="Show what the bot sees in the storage channel")
-async def storage_scan(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    text = await debug_scan_storage_channel()
-    if len(text) > 1900:
-        text = text[:1900] + "\n...[truncated]"
-    await ctx.respond(f"```{text}```", ephemeral=True)
-
-@bot.slash_command(name="storage_refresh", description="Rescan storage channel and reload storage message IDs")
-async def storage_refresh(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    await ctx.defer(ephemeral=True)
-    try:
-        await run_all_inits_with_logging()
-        await ctx.followup.send("Storage reload complete. Run /storage_debug to verify.", ephemeral=True)
-    except Exception as e:
-        await log_exception("storage_refresh", e)
-        try:
-            await ctx.followup.send(f"storage_refresh error: {e}", ephemeral=True)
-        except:
-            pass
 
 @bot.slash_command(name="deadchat_rescan", description="Force-scan all dead-chat channels for latest message timestamps")
 async def deadchat_rescan(ctx):
