@@ -1842,7 +1842,7 @@ class SetupPagerView(discord.ui.View):
         embed.set_footer(text="Use the buttons below to switch pages.")
         return embed
 
-        def make_commands_embed(self) -> discord.Embed:
+    def make_commands_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="Admin Bot Setup Checklist",
             description="Run these commands to configure all features.",
