@@ -1764,6 +1764,7 @@ class SetupPagerView(discord.ui.View):
                 "• Delayed member-join role\n"
                 "• Auto roles for new bots\n"
                 "• Birthday role + birthday announcements\n"
+                "• Public birthday list message (auto-updating)\n"
                 "• Optional Active Member role based on activity"
             ),
             inline=False,
@@ -1773,9 +1774,10 @@ class SetupPagerView(discord.ui.View):
             name="Birthdays & QOTD",
             value=(
                 "• Members can register their birthdays\n"
-                "• Shared birthday list + public birthday message\n"
+                "• Shared birthday list + refreshable public birthday message\n"
                 "• Daily Question of the Day from Google Sheets\n"
-                "• Optional QOTD ping role for people who want pings"
+                "• Optional QOTD ping role for people who want pings\n"
+                "• Admin controls for sending birthday/QOTD announcements"
             ),
             inline=False,
         )
@@ -1786,7 +1788,8 @@ class SetupPagerView(discord.ui.View):
                 "• Dead Chat idle tracking & role steals\n"
                 "• Monthly plague days with infection role\n"
                 "• Scheduled prize drops linked to Dead Chat\n"
-                "• Prize buttons with claim + announce flow"
+                "• Prize claim buttons with announce + logging flow\n"
+                "• Channel rescanning for accurate Dead Chat timestamps"
             ),
             inline=False,
         )
@@ -1797,7 +1800,8 @@ class SetupPagerView(discord.ui.View):
                 "• Tracks last activity per member\n"
                 "• Removes Active role after inactivity\n"
                 "• Auto-delete channels with ignore phrases\n"
-                "• Sticky messages that stay on top in a channel"
+                "• Sticky messages that stay on top in a channel\n"
+                "• Mark members active manually when needed"
             ),
             inline=False,
         )
@@ -1826,10 +1830,11 @@ class SetupPagerView(discord.ui.View):
         embed.add_field(
             name="Utility & Admin Tools",
             value=(
+                "• Setup dashboard for admins (/setup)\n"
                 "• Send or edit messages as the bot\n"
-                "• View current config and raw DB config\n"
-                "• Database health check command\n"
-                "• Full setup checklist in this view"
+                "• Config viewers for both runtime and database state\n"
+                "• Database connection test\n"
+                "• Full setup checklist available in the setup UI"
             ),
             inline=False,
         )
@@ -1837,11 +1842,19 @@ class SetupPagerView(discord.ui.View):
         embed.set_footer(text="Use the buttons below to switch pages.")
         return embed
 
-    def make_commands_embed(self) -> discord.Embed:
+        def make_commands_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="Admin Bot Setup Checklist",
             description="Run these commands to configure all features.",
             color=discord.Color.blurple(),
+        )
+
+        embed.add_field(
+            name="SETUP",
+            value=(
+                "> `/setup` - Show the full Admin Bot setup checklist."
+            ),
+            inline=False,
         )
 
         embed.add_field(
