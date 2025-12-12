@@ -1166,184 +1166,174 @@ class PrizeView(BasePrizeView):
         self.gift_title = gift_title
         self.rarity = rarity
 
-class SetupView(discord.ui.View):
+class SetupPagerView(discord.ui.View):
     def __init__(self):
-        # ephemeral helper, no timeout so they can click through at their pace
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Channels", style=discord.ButtonStyle.primary, row=0)
-    async def channels_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        text = """
-**Channel Setup Commands**
+    def make_home_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Admin Bot Setup",
+            description="Use the buttons below to view **Features** or the **Commands Checklist**.",
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Admin-only • /setup")
+        return embed
 
-`/welcome_channel` - Set the default welcome channel.
+    def make_features_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Admin Bot Features",
+            description="Overview of what this bot does for your server.",
+            color=discord.Color.blurple(),
+        )
 
-`/birthday_announce_channel` - Channel where birthday messages are posted.
+        embed.add_field(
+            name="Onboarding & Roles",
+            value=(
+                "• Welcome messages for new members\n"
+                "• Delayed member join roles\n"
+                "• Auto roles for bots\n"
+                "• Birthday role + birthday announcements"
+            ),
+            inline=False,
+        )
 
-`/twitch_stream_channel` - Default channel for Twitch live notifications.
+        embed.add_field(
+            name="Dead Chat, Plague & Prizes",
+            value=(
+                "• Dead Chat idle tracking & role steals\n"
+                "• Monthly plague days (infection role)\n"
+                "• Scheduled prize drops linked to Dead Chat\n"
+                "• Prize buttons with claim + announce flow"
+            ),
+            inline=False,
+        )
 
-`/deadchat_trigger_channels` - Add channels that count for Dead Chat steals.
+        embed.add_field(
+            name="Activity & Cleanup",
+            value=(
+                "• Tracks last activity per member\n"
+                "• Active role for engaged members\n"
+                "• Auto-delete channels with ignore phrases\n"
+                "• Sticky messages that stay on top"
+            ),
+            inline=False,
+        )
 
-`/prize_announce_channel` - Channel where prize wins are announced.
+        embed.add_field(
+            name="Twitch & Logging",
+            value=(
+                "• Watch multiple Twitch channels\n"
+                "• Live notifications with custom text\n"
+                "• Member join/leave/ban/kick logs\n"
+                "• Bot join/leave/ban logs"
+            ),
+            inline=False,
+        )
 
-`/prize_channel` - Channel where prize drops appear.
+        embed.set_footer(text="Use the buttons below to switch pages.")
+        return embed
 
-`/log_channel_members` - Member join/leave/ban/kick logs.
+    def make_commands_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Admin Bot Setup Checklist",
+            description="Run these commands to configure all features.",
+            color=discord.Color.blurple(),
+        )
 
-`/log_channel_bots` - Bot join/leave/ban logs.
+        embed.add_field(
+            name="CHANNELS",
+            value=(
+                "> `/welcome_channel` - Set the welcome channel.\n"
+                "> `/birthday_announce_channel` - Set birthday announcements.\n"
+                "> `/twitch_stream_channel` - Set Twitch live alerts.\n"
+                "> `/deadchat_trigger_channels` - Add Dead Chat channels.\n"
+                "> `/prize_announce_channel` - Set prize announcement channel.\n"
+                "> `/prize_channel` - Set prize drop channel.\n"
+                "> `/log_channel_members` - Set member log channel.\n"
+                "> `/log_channel_bots` - Set bot log channel.\n"
+                "> `/auto_delete_channel` - Add auto-delete channels."
+            ),
+            inline=False,
+        )
 
-`/auto_delete_channel` - Add a channel to the auto-delete message system.
-        """.strip("\n")
-        await interaction.response.send_message(text, ephemeral=True)
+        embed.add_field(
+            name="ROLES",
+            value=(
+                "> `/active_member_role` - Role for active members.\n"
+                "> `/birthday_role` - Role for birthdays.\n"
+                "> `/deadchat_role` - Dead Chat holder role.\n"
+                "> `/plague_role` - Plague infection role.\n"
+                "> `/member_join_role` - Auto-assign on member join.\n"
+                "> `/bot_join_role` - Auto-assign on bot join."
+            ),
+            inline=False,
+        )
 
-    @discord.ui.button(label="Roles", style=discord.ButtonStyle.primary, row=0)
-    async def roles_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        text = """
-**Role Setup Commands**
+        embed.add_field(
+            name="TEXT & MESSAGES",
+            value=(
+                "> `/birthday_msg` - Set birthday message text.\n"
+                "> `/twitch_msg` - Set Twitch alert text.\n"
+                "> `/plague_msg` - Set plague alert text.\n"
+                "> `/sticky_message` - Set or clear sticky messages."
+            ),
+            inline=False,
+        )
 
-`/active_member_role` - Role given to active members (via activity tracking).
+        embed.add_field(
+            name="AUTO DELETE",
+            value=(
+                "> `/auto_delete_delay` - Set deletion delay.\n"
+                "> `/auto_delete_filters` - Add ignore phrases."
+            ),
+            inline=False,
+        )
 
-`/birthday_role` - Role used to mark someone's birthday.
+        embed.add_field(
+            name="TWITCH & ACTIVITY",
+            value=(
+                "> `/twitch_channel` - Add a Twitch channel.\n"
+                "> `/active_member_role_add` - Mark a user active."
+            ),
+            inline=False,
+        )
 
-`/deadchat_role` - Role that represents the current Dead Chat holder.
+        embed.add_field(
+            name="PRIZES & DEADCHAT",
+            value=(
+                "> `/prize_add` - Add a prize.\n"
+                "> `/prize_day` - Schedule or drop a prize.\n"
+                "> `/prize_announce_send` - Announce a winner.\n"
+                "> `/prize_list` - View scheduled prizes.\n"
+                "> `/prize_delete` - Remove a prize.\n"
+                "> `/plague_day` - Schedule a plague day.\n"
+                "> `/deadchat_scan` - Refresh Dead Chat timestamps."
+            ),
+            inline=False,
+        )
 
-`/plague_role` - Role used when someone gets infected by the plague.
+        embed.add_field(
+            name="UTILITY",
+            value=(
+                "> `/send_msg` - Make the bot send a message.\n"
+                "> `/edit_msg` - Edit a bot message.\n"
+                "> `/birthday_announce_send` - Send a birthday message."
+            ),
+            inline=False,
+        )
 
-`/member_join_role` - Role given to members after a short delay when they join.
+        embed.set_footer(text="Use the buttons below to switch pages.")
+        return embed
 
-`/bot_join_role` - Role given automatically to bots when they join.
-        """.strip("\n")
-        await interaction.response.send_message(text, ephemeral=True)
+    @discord.ui.button(label="Features", style=discord.ButtonStyle.primary, custom_id="setup_features")
+    async def features_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        embed = self.make_features_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Messages & Text", style=discord.ButtonStyle.secondary, row=1)
-    async def messages_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        text = """
-**Message / Text Template Commands**
-
-`/birthday_msg` - Set the birthday announcement template text.
-
-`/twitch_msg` - Set the Twitch "went live" announcement template text.
-
-`/plague_msg` - Set the "plague outbreak" Dead Chat infection message.
-
-`/sticky_message` - Set or clear a sticky message in the current channel.
-        """.strip("\n")
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(label="Auto Delete", style=discord.ButtonStyle.secondary, row=1)
-    async def autodelete_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        text = """
-**Auto Delete Settings**
-
-`/auto_delete_channel` - Add channels that should auto-delete messages.
-
-/`auto_delete_delay` - Set how long messages last before deletion (seconds).
-
-`/auto_delete_filters` - Add phrases that **never** get auto-deleted in those channels.
-        """.strip("\n")
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(label="Twitch & Activity", style=discord.ButtonStyle.success, row=2)
-    async def twitch_activity_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        text = """
-**Twitch & Activity Commands**
-
-`/twitch_stream_channel` - Default channel for all stream notifications.
-
-`/twitch_channel` - Add a specific Twitch channel to watch and where to announce it.
-
-`/active_member_role_add` - Manually mark someone as active right now (gives active role if configured).
-        """.strip("\n")
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(label="Prizes & Dead Chat", style=discord.ButtonStyle.success, row=2)
-    async def prizes_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        text = """
-**Prizes & Dead Chat / Plague**
-
-`/prize_add` - Define a prize title + drop rarity.
-
-`/prize_day` - Schedule a prize drop for a specific date or drop one immediately.
-
-`/prize_announce_send` - Manually announce a prize winner.
-
-`/prize_list` - List all scheduled prize drops.
-
-`/prize_delete` - Delete a scheduled prize by ID.
-
-`/plague_day` - Schedule (or trigger today) a plague day; first Dead Chat steal after the set hour gets infected.
-
-`/deadchat_scan` - Scan Dead Chat channels to refresh last-message timestamps (fixes idle detection after long downtime).
-        """.strip("\n")
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(label="Utility & Manual", style=discord.ButtonStyle.danger, row=3)
-    async def utility_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        text = """
-**Utility & Manual Commands**
-
-`/send_msg` - Make the bot send a custom message in the current channel.
-
-`/edit_msg` - Edit an existing bot message by ID.
-
-`/birthday_announce_send` - Manually send the birthday message for a specific member.
-        """.strip("\n")
-        await interaction.response.send_message(text, ephemeral=True)
-
-    @discord.ui.button(label="Show All Commands", style=discord.ButtonStyle.secondary, row=3)
-    async def all_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        text = """
-**Full Setup Checklist**
-
-CHANNELS:
-`/welcome_channel` - Set the default welcome channel for new members.
-`/birthday_announce_channel` - Set the channel where birthday messages are posted.
-`/twitch_stream_channel` - Set the default channel for Twitch live notifications.
-`/deadchat_trigger_channels` - Add a channel that counts for Dead Chat steals.
-`/prize_announce_channel` - Set the channel where prize wins are announced.
-`/prize_channel` - Set the channel where prize drops appear.
-`/log_channel_members` - Set the member join/leave/ban/kick log channel.
-`/log_channel_bots` - Set the bot join/leave/ban log channel.
-`/auto_delete_channel` - Add a channel to the auto-delete system.
-
-ROLES:
-`/active_member_role` - Set the role used for active members.
-`/birthday_role` - Set the role used to mark birthdays.
-`/deadchat_role` - Set the role given to the current Dead Chat holder.
-`/plague_role` - Set the role used for plague infections.
-`/member_join_role` - Set the role given to members after a short delay.
-`/bot_join_role` - Set the role given automatically to new bots.
-
-TEXT & MESSAGES:
-`/birthday_msg` - Set the birthday announcement template text.
-`twitch_msg` - Set the Twitch "went live" announcement template.
-/`plague_msg` - Set the plague outbreak announcement text.
-`/sticky_message` - Set or clear a sticky message in this channel.
-
-AUTO DELETE:
-`/auto_delete_delay` - Set how long messages last in auto-delete channels (seconds).
-`/auto_delete_filters` - Add a phrase that never gets auto-deleted.
-
-TWITCH & ACTIVITY:
-`/twitch_channel` - Add a Twitch channel and where its live announcements go.
-`/active_member_role_add` - Mark a member as active right now (gives active role).
-
-PRIZES & DEADCHAT:
-`/prize_add` - Define a prize title and its drop rarity.
-`/prize_day` - Schedule or instantly drop a Dead Chat prize.
-`/prize_announce_send` - Manually announce a Dead Chat prize winner.
-`/prize_list` - View all scheduled Dead Chat prize drops.
-`/prize_delete` - Delete a scheduled prize drop by ID.
-`/plague_day` - Schedule a plague day; first Dead Chat steal gets infected.
-`/deadchat_scan` - Scan Dead Chat channels and refresh idle timestamps.
-
-UTILITY:
-`/send_msg` - Make the bot send a custom message in this channel.
-`/edit_msg` - Edit a bot message in this channel by ID.
-`/birthday_announce_send` - Manually send a birthday message for a member.
-        """.strip("\n")
-        await interaction.response.send_message(text, ephemeral=True)
-
+    @discord.ui.button(label="Commands", style=discord.ButtonStyle.secondary, custom_id="setup_commands")
+    async def commands_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        embed = self.make_commands_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
 ############### AUTOCOMPLETE FUNCTIONS ###############
 
@@ -1785,97 +1775,11 @@ async def setup(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
 
-    embed = discord.Embed(
-        title="Admin Bot Setup Checklist",
-        description="Run these commands to configure all features.",
-        color=discord.Color.blurple(),
-    )
+    view = SetupPagerView()
+    embed = view.make_home_embed()
 
-    embed.add_field(
-        name="CHANNELS",
-        value=(
-            "> `/welcome_channel` - Set the welcome channel.\n"
-            "> `/birthday_announce_channel` - Set birthday announcements.\n"
-            "> `/twitch_stream_channel` - Set Twitch live alerts.\n"
-            "> `/deadchat_trigger_channels` - Add Dead Chat channels.\n"
-            "> `/prize_announce_channel` - Set prize announcement channel.\n"
-            "> `/prize_channel` - Set prize drop channel.\n"
-            "> `/log_channel_members` - Set member log channel.\n"
-            "> `/log_channel_bots` - Set bot log channel.\n"
-            "> `/auto_delete_channel` - Add auto-delete channels."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="ROLES",
-        value=(
-            "> `/active_member_role` - Role for active members.\n"
-            "> `/birthday_role` - Role for birthdays.\n"
-            "> `/deadchat_role` - Dead Chat holder role.\n"
-            "> `/plague_role` - Plague infection role.\n"
-            "> `/member_join_role` - Auto-assign on member join.\n"
-            "> `/bot_join_role` - Auto-assign on bot join."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="TEXT & MESSAGES",
-        value=(
-            "> `/birthday_msg` - Set birthday message text.\n"
-            "> `/twitch_msg` - Set Twitch alert text.\n"
-            "> `/plague_msg` - Set plague alert text.\n"
-            "> `/sticky_message` - Set or clear sticky messages."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="AUTO DELETE",
-        value=(
-            "> `/auto_delete_delay` - Set deletion delay.\n"
-            "> `/auto_delete_filters` - Add ignore phrases."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="TWITCH & ACTIVITY",
-        value=(
-            "> `/twitch_channel` - Add a Twitch channel.\n"
-            "> `/active_member_role_add` - Mark a user active."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="PRIZES & DEADCHAT",
-        value=(
-            "> `/prize_add` - Add a prize.\n"
-            "> `/prize_day` - Schedule or drop a prize.\n"
-            "> `/prize_announce_send` - Announce a winner.\n"
-            "> `/prize_list` - View scheduled prizes.\n"
-            "> `/prize_delete` - Remove a prize.\n"
-            "> `/plague_day` - Schedule a plague day.\n"
-            "> `/deadchat_scan` - Refresh Dead Chat timestamps."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="UTILITY",
-        value=(
-            "> `/send_msg` - Make the bot send a message.\n"
-            "> `/edit_msg` - Edit a bot message.\n"
-            "> `/birthday_announce_send` - Send a birthday message."
-        ),
-        inline=False,
-    )
-
-    embed.set_footer(text="Admin-only • Use this checklist to configure everything")
-
-    await ctx.respond(embed=embed, ephemeral=True)
+    # ephemeral=True = only the admin sees it.
+    await ctx.respond(embed=embed, view=view, ephemeral=True)
 
 
 @bot.slash_command(
