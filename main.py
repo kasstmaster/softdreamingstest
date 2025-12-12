@@ -2330,6 +2330,96 @@ class SetupPagerView(discord.ui.View):
 ############### AUTOCOMPLETE FUNCTIONS ###############
 
 
+TEST_GUILD_ID = 123456789012345678  # <-- your test server guild id
+TEST_CHANNEL_ID = None             # <-- optional: put #bot-test channel id here
+
+class FakeCtx:
+    """
+    Minimal stand-in for ApplicationContext so we can call slash command
+    functions without consuming the /test_all interaction response.
+    """
+    def __init__(self, *, bot, guild, author, channel):
+        self.bot = bot
+        self.guild = guild
+        self.author = author
+        self.channel = channel
+
+    async def respond(self, content=None, *, ephemeral=False, **kwargs):
+        # Ignore ephemeral; always send to the test channel
+        if content:
+            return await self.channel.send(content)
+
+    async def send(self, content=None, **kwargs):
+        if content:
+            return await self.channel.send(content)
+
+
+@bot.slash_command(name="test_all", description="TEST SERVER ONLY: run every command.")
+async def test_all(ctx):
+    # Safety gates
+    if not ctx.guild or ctx.guild.id != TEST_GUILD_ID:
+        return await ctx.respond("This is restricted to the test server.", ephemeral=True)
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    # Pick output channel
+    out_ch = bot.get_channel(TEST_CHANNEL_ID) if TEST_CHANNEL_ID else ctx.channel
+
+    # Pick helpers (best-effort)
+    text_ch = out_ch
+    voice_ch = next((c for c in ctx.guild.voice_channels if c.permissions_for(ctx.guild.me).view_channel), None)
+    role = next((r for r in ctx.guild.roles if r.name != "@everyone"), None)
+
+    fctx = FakeCtx(bot=bot, guild=ctx.guild, author=ctx.author, channel=out_ch)
+
+    await ctx.respond("Running `/test_all`… posting results in this channel.", ephemeral=True)
+
+    results = []
+
+    async def run_step(name, coro):
+        try:
+            await coro
+            results.append(f"✅ {name}")
+        except Exception as e:
+            results.append(f"❌ {name}: {type(e).__name__}: {e}")
+
+    # ---- Run your existing commands (CALL YOUR REAL FUNCTIONS HERE) ----
+    # IMPORTANT: these names must match your actual command function names.
+    # If your functions require different parameter names/types, adjust the args.
+
+    await run_step("birthday_public", birthday_public(fctx))
+    await run_step("birthday_list", birthday_list(fctx))
+
+    # birthday_set / birthday_set_for
+    await run_step("birthday_set", birthday_set(fctx, month=1, day=1))
+    await run_step("birthday_set_for", birthday_set_for(fctx, member=ctx.author, month=1, day=2))
+
+    # announce commands
+    await run_step("birthday_announce_send", birthday_announce_send(fctx))
+    await run_step("prize_announce_send", prize_announce_send(fctx, prize="Test Prize"))
+
+    # qotd
+    await run_step("qotd_enable", qotd_enable(fctx))
+    await run_step("qotd_channel", qotd_channel(fctx, channel=text_ch))
+    if role:
+        await run_step("qotd_ping_role", qotd_ping_role(fctx, role=role))
+    await run_step("qotd_disable", qotd_disable(fctx))
+
+    # vc roles
+    if voice_ch and role:
+        await run_step("vc_role_link", vc_role_link(fctx, channel=voice_ch, role=role))
+        await run_step("vc_role_list", vc_role_list(fctx))
+        await run_step("vc_role_unlink", vc_role_unlink(fctx, channel=voice_ch))
+    else:
+        results.append("⚠️ vc_role_* skipped (no voice channel or no role found)")
+
+    # Final report
+    report = "\n".join(results)
+    if len(report) > 1900:
+        report = report[:1900] + "\n...[truncated]"
+    await out_ch.send(f"```diff\n{report}\n```")
+
+
 ############### BACKGROUND TASKS & SCHEDULERS ###############
 async def qotd_scheduler():
     """Posts the daily QOTD to every guild that has QOTD enabled."""
