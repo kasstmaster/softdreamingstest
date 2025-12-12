@@ -124,6 +124,10 @@ except Exception:
 guild_configs: dict[int, dict] = {}
 db_pool: asyncpg.Pool | None = None
 
+activity_dirty = False
+deadchat_dirty = False
+sticky_dirty = False
+
 twitch_access_token: str | None = None
 twitch_live_state: dict[str, bool] = {}
 all_twitch_channels: set[str] = set()
@@ -563,6 +567,29 @@ async def set_theme_mode(guild_id: int, mode: str):
             mode,
         )
 
+async def deadchat_flush_watcher():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            global deadchat_dirty
+            if deadchat_dirty:
+                deadchat_dirty = False
+                await save_deadchat_storage()
+        except Exception as e:
+            await log_exception("deadchat_flush_watcher", e)
+        await asyncio.sleep(30)
+
+async def activity_flush_watcher():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            global activity_dirty
+            if activity_dirty:
+                activity_dirty = False
+                await save_last_activity_storage()
+        except Exception as e:
+            await log_exception("activity_flush_watcher", e)
+        await asyncio.sleep(60)
 
 async def save_guild_config_db(guild: discord.Guild, cfg: dict):
     if db_pool is None:
@@ -998,15 +1025,22 @@ async def save_stickies():
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("TRUNCATE sticky_data")
             for cid, text in sticky_texts.items():
                 mid = sticky_messages.get(cid)
                 await conn.execute(
-                    "INSERT INTO sticky_data (channel_id, text, message_id) VALUES ($1, $2, $3)",
-                    cid,
-                    text,
-                    mid,
+                    """
+                    INSERT INTO sticky_data (channel_id, text, message_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (channel_id) DO UPDATE SET
+                        text = EXCLUDED.text,
+                        message_id = EXCLUDED.message_id
+                    """,
+                    cid, text, mid
                 )
+            await conn.execute(
+                "DELETE FROM sticky_data WHERE channel_id <> ALL($1::bigint[])",
+                list(sticky_texts.keys()),
+            )
 
 async def init_member_join_storage():
     global member_join_storage_message_id, pending_member_joins
@@ -1042,7 +1076,6 @@ async def save_member_join_storage():
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("TRUNCATE member_join_queue")
             for entry in pending_member_joins:
                 guild_id = entry.get("guild_id")
                 member_id = entry.get("member_id")
@@ -1054,10 +1087,13 @@ async def save_member_join_storage():
                 except Exception:
                     continue
                 await conn.execute(
-                    "INSERT INTO member_join_queue (guild_id, member_id, assign_at) VALUES ($1, $2, $3)",
-                    guild_id,
-                    member_id,
-                    assign_at,
+                    """
+                    INSERT INTO member_join_queue (guild_id, member_id, assign_at)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (guild_id, member_id) DO UPDATE SET
+                        assign_at = EXCLUDED.assign_at
+                    """,
+                    guild_id, member_id, assign_at
                 )
 
 def build_mm_dd(month_name: str, day: int) -> str | None:
@@ -1476,7 +1512,7 @@ async def handle_dead_chat_message(message: discord.Message):
     now_s = now.isoformat() + "Z"
     last_raw = deadchat_last_times.get(cid)
     deadchat_last_times[cid] = now_s
-    await save_deadchat_storage()
+    deadchat_dirty = True
     if not last_raw:
         return
     try:
@@ -1531,14 +1567,15 @@ async def handle_dead_chat_message(message: discord.Message):
             await log_to_guild_bot_channel(guild, f"[PRIZE] Daily prize drop(s) sent for {today_str}.")
 
     for old_cid, mid in list(dead_last_notice_message_ids.items()):
-        if mid:
-            ch = guild.get_channel(old_cid)
-            if ch:
-                try:
-                    m = await ch.fetch_message(mid)
-                    await m.delete()
-                except:
-                    pass
+        if not mid:
+            continue
+        ch = bot.get_channel(old_cid)
+        if ch:
+            try:
+                m = await ch.fetch_message(mid)
+                await m.delete()
+            except:
+                pass
 
     if triggered_plague:
         plague_text = (cfg.get("plague_outbreak_text") or DEFAULT_PLAGUE_OUTBREAK_MESSAGE).format(mention=message.author.mention)
@@ -1581,16 +1618,19 @@ async def save_deadchat_storage():
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("TRUNCATE deadchat_last_times")
             for cid, ts_str in deadchat_last_times.items():
                 try:
                     dt = datetime.fromisoformat(ts_str.replace("Z", ""))
                 except Exception:
                     continue
                 await conn.execute(
-                    "INSERT INTO deadchat_last_times (channel_id, last_time) VALUES ($1, $2)",
-                    cid,
-                    dt,
+                    """
+                    INSERT INTO deadchat_last_times (channel_id, last_time)
+                    VALUES ($1, $2)
+                    ON CONFLICT (channel_id) DO UPDATE SET
+                        last_time = EXCLUDED.last_time
+                    """,
+                    cid, dt
                 )
 
 async def init_deadchat_state_storage():
@@ -1598,7 +1638,7 @@ async def init_deadchat_state_storage():
     deadchat_state_storage_message_id = None  
     await load_deadchat_state()
 
-async def load_deadchat_state():
+async def load_deadchat_state(guild_id: int):
     global dead_last_win_time, dead_last_notice_message_ids, dead_current_holders
 
     if db_pool is None:
@@ -1610,7 +1650,8 @@ async def load_deadchat_state():
 
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT current_holders, last_win_times, notice_msg_ids FROM deadchat_state WHERE guild_id = 0"
+            "SELECT current_holders, last_win_times, notice_msg_ids FROM deadchat_state WHERE guild_id = $1",
+            guild_id,
         )
 
     if not row:
@@ -1631,22 +1672,34 @@ async def load_deadchat_state():
         except Exception:
             pass
 
-    dead_last_notice_message_ids = {
-        int(k): v for k, v in nm_json.items() if v
-    }
+    dead_last_notice_message_ids = {int(k): v for k, v in nm_json.items() if v}
 
-async def save_deadchat_state():
+async def save_deadchat_state(guild_id: int):
     if db_pool is None:
         return
 
     data = {
         "current_holders": {str(k): v for k, v in dead_current_holders.items()},
-        "last_win_times": {
-            str(k): v.isoformat() + "Z" for k, v in dead_last_win_time.items()
-        },
+        "last_win_times": {str(k): v.isoformat() + "Z" for k, v in dead_last_win_time.items()},
         "notice_msg_ids": {str(k): v for k, v in dead_last_notice_message_ids.items()},
     }
 
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO deadchat_state (guild_id, current_holders, last_win_times, notice_msg_ids)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (guild_id) DO UPDATE SET
+                current_holders = EXCLUDED.current_holders,
+                last_win_times = EXCLUDED.last_win_times,
+                notice_msg_ids = EXCLUDED.notice_msg_ids
+            """,
+            guild_id,
+            data["current_holders"],
+            data["last_win_times"],
+            data["notice_msg_ids"],
+        )
+        
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
@@ -1686,12 +1739,15 @@ async def save_twitch_state():
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("TRUNCATE twitch_state")
             for name, is_live in twitch_live_state.items():
                 await conn.execute(
-                    "INSERT INTO twitch_state (username, is_live) VALUES ($1, $2)",
-                    name,
-                    is_live,
+                    """
+                    INSERT INTO twitch_state (username, is_live)
+                    VALUES ($1, $2)
+                    ON CONFLICT (username) DO UPDATE SET
+                        is_live = EXCLUDED.is_live
+                    """,
+                    name, is_live
                 )
 
 async def get_twitch_token():
@@ -1763,7 +1819,6 @@ async def save_last_activity_storage():
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("TRUNCATE last_activity")
             for gid, members in last_activity.items():
                 for mid, ts_str in members.items():
                     try:
@@ -1771,13 +1826,20 @@ async def save_last_activity_storage():
                     except Exception:
                         continue
                     await conn.execute(
-                        "INSERT INTO last_activity (guild_id, member_id, last_seen) VALUES ($1, $2, $3)",
-                        gid,
-                        mid,
-                        dt,
+                        """
+                        INSERT INTO last_activity (guild_id, member_id, last_seen)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (guild_id, member_id) DO UPDATE SET
+                            last_seen = EXCLUDED.last_seen
+                        """,
+                        gid, mid, dt
                     )
 
+activity_dirty = False
+
 async def touch_member_activity(member: discord.Member):
+    global activity_dirty
+
     if member.bot:
         return
     guild_id = member.guild.id
@@ -1785,7 +1847,8 @@ async def touch_member_activity(member: discord.Member):
         last_activity[guild_id] = {}
     now = discord.utils.utcnow().isoformat() + "Z"
     last_activity[guild_id][member.id] = now
-    await save_last_activity_storage()
+    activity_dirty = True
+
     cfg = await get_guild_config(member.guild)
     active_role_id = cfg.get("active_role_id", 0)
     if active_role_id == 0:
@@ -1797,6 +1860,7 @@ async def touch_member_activity(member: discord.Member):
             await log_to_guild_bot_channel(member.guild, f"[ACTIVITY] {member.mention} marked active and given active role.")
         except Exception as e:
             await log_exception("touch_member_activity_add_role", e)
+
 
 def find_role_by_name(guild: discord.Guild, name: str) -> discord.Role | None:
     name_lower = name.lower()
@@ -1812,14 +1876,13 @@ async def clear_theme_roles(guild: discord.Guild) -> list[str]:
 
     for role in guild.roles:
         if role.name in seasonal_names:
-            for member in guild.members:
-                if role in member.roles:
-                    try:
-                        await member.remove_roles(role, reason="Seasonal theme clear")
-                        if role.name not in removed:
-                            removed.append(role.name)
-                    except Exception as e:
-                        await log_exception("clear_theme_roles", e)
+            for member in list(role.members):
+                try:
+                    await member.remove_roles(role, reason="Seasonal theme clear")
+                    if role.name not in removed:
+                        removed.append(role.name)
+                except Exception as e:
+                    await log_exception("clear_theme_roles", e)
 
     return removed
 
@@ -1843,8 +1906,8 @@ async def apply_theme_roles(guild: discord.Guild, mapping: dict[str, str]) -> li
                 await log_exception("apply_theme_roles_create", e)
                 continue
 
-        for member in guild.members:
-            if base_role in member.roles and seasonal_role not in member.roles:
+        for member in list(base_role.members):
+            if seasonal_role not in member.roles:
                 try:
                     await member.add_roles(seasonal_role, reason="Seasonal theme")
                 except Exception as e:
@@ -2494,30 +2557,36 @@ async def member_join_watcher():
                     assign_at = datetime.fromisoformat(assign_at_str.replace("Z", ""))
                 except:
                     continue
+
                 if now >= assign_at:
                     guild = bot.get_guild(guild_id)
                     if not guild:
-                        continue
+                        remaining.append(entry); continue
+
                     cfg = await ensure_guild_config(guild)
                     member_role_id = cfg.get("member_join_role_id", 0)
                     if not member_role_id:
-                        continue
+                        remaining.append(entry); continue
+
                     member = guild.get_member(member_id)
                     if not member:
-                        continue
+                        remaining.append(entry); continue
+
                     role = guild.get_role(member_role_id)
                     if not role:
-                        continue
+                        remaining.append(entry); continue
+
                     if role not in member.roles:
                         try:
                             await member.add_roles(role, reason="Delayed member join role")
                             await log_to_guild_bot_channel(guild, f"[MEMBERJOIN] Applied member role to {member.mention}.")
                         except:
                             pass
-                    await touch_member_activity(member)
+
                     changed = True
                 else:
                     remaining.append(entry)
+
             if changed or len(remaining) != len(pending_member_joins):
                 pending_member_joins[:] = remaining
                 await save_member_join_storage()
@@ -2553,7 +2622,7 @@ async def activity_inactive_watcher():
                     if member.id in inactive_ids or member.id not in guild_activity:
                         try:
                             await member.remove_roles(role, reason="Marked inactive by activity tracking")
-                            await log_to_guild_bot_channel(guild, f"{member.mention} is officially inactive @everyone")
+                            await log_to_guild_bot_channel(guild, f"{member.mention} is officially inactive")
                         except Exception as e:
                             await log_exception("activity_inactive_watcher_remove_role", e)
         except Exception as e:
@@ -2562,12 +2631,19 @@ async def activity_inactive_watcher():
 
 
 ############### EVENT HANDLERS ###############
+tasks_started = False
+
 @bot.event
 async def on_ready():
-    await init_db()  # FIRST
+    global tasks_started
+    await init_db()
 
     print(f"{bot.user} is online!")
     print(f"Logged in as {bot.user}")
+
+    if tasks_started:
+        return
+    tasks_started = True
 
     await run_all_inits_with_logging()
     await initialize_dead_chat()
@@ -2588,6 +2664,10 @@ async def on_ready():
     bot.loop.create_task(infected_watcher())
     bot.loop.create_task(member_join_watcher())
     bot.loop.create_task(activity_inactive_watcher())
+    bot.loop.create_task(activity_flush_watcher())
+    bot.loop.create_task(deadchat_flush_watcher())
+    bot.loop.create_task(activity_flush_watcher())
+    bot.loop.create_task(deadchat_flush_watcher())
 
 @bot.event
 async def on_member_update(before, after):
@@ -2644,6 +2724,8 @@ async def on_message(message: discord.Message):
                     await log_exception("auto_delete_delete_later", e)
 
             bot.loop.create_task(delete_later())
+
+    await bot.process_commands(message)
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -3571,7 +3653,7 @@ async def prize_announce(
 
 
 @bot.slash_command(
-    name="sticky_message",
+    name="sticky_msg",
     description="Set or clear a sticky message in this channel."
 )
 async def sticky(
