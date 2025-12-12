@@ -1,3 +1,20 @@
+# ============================================================
+# RULES FOR CHATGPT AND GROK (DO NOT VIOLATE)
+# • Use ONLY these sections, in this exact order:
+#   ############### IMPORTS ###############
+#   ############### CONSTANTS & CONFIG ###############
+#   ############### GLOBAL STATE / STORAGE ###############
+#   ############### HELPER FUNCTIONS ###############
+#   ############### VIEWS / UI COMPONENTS ###############
+#   ############### AUTOCOMPLETE FUNCTIONS ###############
+#   ############### BACKGROUND TASKS & SCHEDULERS ###############
+#   ############### EVENT HANDLERS ###############
+#   ############### COMMAND GROUPS ###############
+#   ############### ON_READY & BOT START ###############
+# • Do NOT add any other sections.
+# • Do NOT add comments inside the code. No inline labels.
+# ============================================================
+
 ############### IMPORTS ###############
 import discord
 import os
@@ -7,6 +24,7 @@ import json
 import traceback
 import sys
 import asyncpg
+import urllib.request
 import random as pyrandom
 import gspread
 from datetime import datetime, timedelta
@@ -88,11 +106,19 @@ THEME_HALLOWEEN_ROLES = {
     "Halloween": "Bots",
 }
 
-# For now, emojis are empty — can be filled later
-THEME_EMOJI_CONFIG = {
-    "christmas": {},
-    "halloween": {},
-}
+THEME_CHRISTMAS_EMOJIS_RAW = os.getenv("THEME_CHRISTMAS_EMOJIS", "[]")
+THEME_HALLOWEEN_EMOJIS_RAW = os.getenv("THEME_HALLOWEEN_EMOJIS", "[]")
+
+try:
+    THEME_EMOJI_CONFIG = {
+        "christmas": json.loads(THEME_CHRISTMAS_EMOJIS_RAW) if THEME_CHRISTMAS_EMOJIS_RAW else [],
+        "halloween": json.loads(THEME_HALLOWEEN_EMOJIS_RAW) if THEME_HALLOWEEN_EMOJIS_RAW else [],
+    }
+except Exception:
+    THEME_EMOJI_CONFIG = {
+        "christmas": [],
+        "halloween": [],
+    }
 
 ############### GLOBAL STATE / STORAGE ###############
 guild_configs: dict[int, dict] = {}
@@ -1532,65 +1558,101 @@ async def apply_theme_icon(guild: discord.Guild, url: str | None):
     except Exception as e:
         await log_exception("apply_theme_icon", e)
 
+async def clear_theme_emojis(guild: discord.Guild) -> list[str]:
+    names = set()
+    for items in THEME_EMOJI_CONFIG.values():
+        for entry in items:
+            name = entry.get("name")
+            if name:
+                names.add(name.lower())
+    removed = []
+    if not names:
+        return removed
+    for emoji in list(guild.emojis):
+        if emoji.name.lower() in names:
+            try:
+                await emoji.delete(reason="Seasonal theme emoji clear")
+                removed.append(emoji.name)
+            except Exception as e:
+                await log_exception("clear_theme_emojis", e)
+    return removed
+
+
+async def apply_theme_emojis(guild: discord.Guild, key: str) -> list[str]:
+    items = THEME_EMOJI_CONFIG.get(key) or []
+    added = []
+    if not items:
+        return added
+    existing = {e.name.lower() for e in guild.emojis}
+    async with aiohttp.ClientSession() as session:
+        for entry in items:
+            name = entry.get("name")
+            url = entry.get("url")
+            if not name or not url:
+                continue
+            if name.lower() in existing:
+                continue
+            try:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.read()
+                emoji = await guild.create_custom_emoji(name=name, image=data, reason="Seasonal theme emoji")
+                added.append(emoji.name)
+                existing.add(emoji.name.lower())
+            except Exception as e:
+                await log_exception("apply_theme_emojis", e)
+    return added
+
 async def apply_theme_for_today_with_mode(
     guild: discord.Guild,
     today: str | None = None,
     mode: str = "auto",
 ):
-    """
-    Wrapper that respects manual mode overrides.
-
-    mode:
-      - 'auto'       -> use date-based seasonal choice (your existing logic)
-      - 'none'       -> clear roles/emojis and revert to default
-      - 'halloween'  -> force halloween
-      - 'christmas'  -> force christmas
-    """
     if today is None:
         from datetime import datetime
         today = datetime.utcnow().strftime("%m-%d")
 
-    # 'none' means just clear everything and revert
+    removed_roles: list[str] = []
+    removed_emojis: list[str] = []
+    added_roles: list[str] = []
+    added_emojis: list[str] = []
+
     if mode == "none":
         removed_roles = await clear_theme_roles(guild)
         removed_emojis = await clear_theme_emojis(guild)
-        await apply_icon_to_bot_and_server(guild, ICON_DEFAULT_URL)
-        await log_to_thread(
-            f"theme_update guild={guild.id} today={today} mode=none "
-            f"roles_cleared={removed_roles} emojis_cleared={removed_emojis} roles_added=0 emojis_added=0"
+        await apply_theme_icon(guild, ICON_DEFAULT_URL)
+        await log_to_bot_channel(
+            f"[THEME] guild={guild.id} date={today} mode=none roles_cleared={removed_roles} emojis_cleared={removed_emojis}"
         )
-        return "none", removed_roles, removed_emojis, 0, 0
+        return "none", removed_roles, removed_emojis, added_roles, added_emojis
 
-    # Manual forced modes
     if mode == "halloween":
         removed_roles = await clear_theme_roles(guild)
         removed_emojis = await clear_theme_emojis(guild)
-        added_roles = await apply_theme_roles(guild, "halloween")
+        added_roles = await apply_theme_roles(guild, THEME_HALLOWEEN_ROLES)
         added_emojis = await apply_theme_emojis(guild, "halloween")
-        await log_to_thread(
-            f"theme_update guild={guild.id} today={today} mode=halloween-forced "
-            f"roles_cleared={removed_roles} emojis_cleared={removed_emojis} "
-            f"roles_added={added_roles} emojis_added={added_emojis}"
+        await apply_theme_icon(guild, ICON_HALLOWEEN_URL or ICON_DEFAULT_URL)
+        await log_to_bot_channel(
+            f"[THEME] guild={guild.id} date={today} mode=halloween roles_cleared={removed_roles} emojis_cleared={removed_emojis} roles_added={added_roles} emojis_added={added_emojis}"
         )
         return "halloween", removed_roles, removed_emojis, added_roles, added_emojis
 
     if mode == "christmas":
         removed_roles = await clear_theme_roles(guild)
         removed_emojis = await clear_theme_emojis(guild)
-        added_roles = await apply_theme_roles(guild, "christmas")
+        added_roles = await apply_theme_roles(guild, THEME_CHRISTMAS_ROLES)
         added_emojis = await apply_theme_emojis(guild, "christmas")
-        await log_to_thread(
-            f"theme_update guild={guild.id} today={today} mode=christmas-forced "
-            f"roles_cleared={removed_roles} emojis_cleared={removed_emojis} "
-            f"roles_added={added_roles} emojis_added={added_emojis}"
+        await apply_theme_icon(guild, ICON_CHRISTMAS_URL or ICON_DEFAULT_URL)
+        await log_to_bot_channel(
+            f"[THEME] guild={guild.id} date={today} mode=christmas roles_cleared={removed_roles} emojis_cleared={removed_emojis} roles_added={added_roles} emojis_added={added_emojis}"
         )
         return "christmas", removed_roles, removed_emojis, added_roles, added_emojis
 
-    # Fallback: 'auto' (or unknown): use your existing auto logic
-    mode, removed_roles, removed_emojis, added_roles, added_emojis = await apply_theme_for_today(guild, today)
-    return mode, removed_roles, removed_emojis, added_roles, added_emojis
+    mode_auto, removed_roles, removed_emojis, added_roles, added_emojis = await apply_theme_for_today(guild, today)
+    return mode_auto, removed_roles, removed_emojis, added_roles, added_emojis
 
-async def apply_theme_for_today(guild: discord.Guild, mm_dd: str) -> tuple[str, list[str], list[str]]:
+async def apply_theme_for_today(guild: discord.Guild, mm_dd: str):
     month_str, _ = mm_dd.split("-")
     month = int(month_str)
 
@@ -1602,18 +1664,26 @@ async def apply_theme_for_today(guild: discord.Guild, mm_dd: str) -> tuple[str, 
         mode = "none"
 
     removed_roles = await clear_theme_roles(guild)
+    removed_emojis = await clear_theme_emojis(guild)
     added_roles: list[str] = []
+    added_emojis: list[str] = []
 
     if mode == "halloween":
         added_roles = await apply_theme_roles(guild, THEME_HALLOWEEN_ROLES)
+        added_emojis = await apply_theme_emojis(guild, "halloween")
         await apply_theme_icon(guild, ICON_HALLOWEEN_URL or ICON_DEFAULT_URL)
     elif mode == "christmas":
         added_roles = await apply_theme_roles(guild, THEME_CHRISTMAS_ROLES)
+        added_emojis = await apply_theme_emojis(guild, "christmas")
         await apply_theme_icon(guild, ICON_CHRISTMAS_URL or ICON_DEFAULT_URL)
     else:
         await apply_theme_icon(guild, ICON_DEFAULT_URL)
 
-    return mode, removed_roles, added_roles
+    await log_to_bot_channel(
+        f"[THEME] guild={guild.id} date={mm_dd} mode={mode} roles_cleared={removed_roles} emojis_cleared={removed_emojis} roles_added={added_roles} emojis_added={added_emojis}"
+    )
+
+    return mode, removed_roles, removed_emojis, added_roles, added_emojis
 
 
 ############### VIEWS / UI COMPONENTS ###############
