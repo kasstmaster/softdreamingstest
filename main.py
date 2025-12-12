@@ -380,6 +380,36 @@ async def init_db():
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS auto_delete_ignore_phrases TEXT DEFAULT '[]';
         """)
+
+async def ensure_guild_configs_schema():
+    if db_pool is None:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS birthday_announce_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS twitch_announce_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_announce_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS mod_log_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS bot_log_channel_id BIGINT DEFAULT 0;
+        """)
+
         
 
 async def get_theme_settings(guild_id: int) -> dict:
@@ -448,6 +478,7 @@ async def set_theme_mode(guild_id: int, mode: str):
 async def save_guild_config_db(guild: discord.Guild, cfg: dict):
     if db_pool is None:
         return
+    await ensure_guild_configs_schema()
     dead_chat_ids = cfg.get("dead_chat_channel_ids") or []
     auto_delete_ids = cfg.get("auto_delete_channel_ids") or []
     dead_chat_json = json.dumps([int(x) for x in dead_chat_ids])
