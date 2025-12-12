@@ -196,8 +196,14 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS qotd_settings (
             guild_id BIGINT PRIMARY KEY,
             channel_id BIGINT,
-            enabled BOOLEAN NOT NULL DEFAULT FALSE
+            enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            ping_role_id BIGINT DEFAULT 0
         );
+        """)
+
+        await conn.execute("""
+        ALTER TABLE qotd_settings
+        ADD COLUMN IF NOT EXISTS ping_role_id BIGINT DEFAULT 0;
         """)
 
         await conn.execute("""
@@ -900,21 +906,35 @@ async def remove_birthday(guild_id: int, user_id: int) -> bool:
     return result.split()[-1] != "0"
 
 async def get_guild_qotd_settings(guild_id: int):
+    """
+    Returns QOTD settings for a guild:
+    {
+        "channel_id": int,
+        "enabled": bool,
+        "ping_role_id": int  # 0 means "no role"
+    }
+    """
     if db_pool is None:
         return None
 
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT channel_id, enabled FROM qotd_settings WHERE guild_id = $1",
+            "SELECT channel_id, enabled, ping_role_id FROM qotd_settings WHERE guild_id = $1",
             guild_id,
         )
 
     if not row:
         return None
 
+    # Some old rows might have NULL for ping_role_id; treat that as 0
+    ping_role_id = row.get("ping_role_id", 0) if isinstance(row, dict) else row["ping_role_id"]
+    if ping_role_id is None:
+        ping_role_id = 0
+
     return {
-        "channel_id": int(row["channel_id"]),
-        "enabled": row["enabled"],
+        "channel_id": int(row["channel_id"]) if row["channel_id"] else 0,
+        "enabled": bool(row["enabled"]),
+        "ping_role_id": int(ping_role_id or 0),
     }
 
 async def get_guild_vc_links(guild_id: int) -> dict[int, int]:
@@ -1080,10 +1100,18 @@ async def post_daily_qotd():
                 color=discord.Color.gold(),
             )
 
-            await channel.send(embed=embed)
+            ping_role_id = settings.get("ping_role_id", 0) or 0
+            ping_role = guild.get_role(ping_role_id) if ping_role_id else None
 
-        except Exception as e:
-            await log_exception(f"post_daily_qotd guild {guild.id}", e)
+            if ping_role:
+                allowed = discord.AllowedMentions(roles=True)
+                await channel.send(
+                    content=ping_role.mention,
+                    embed=embed,
+                    allowed_mentions=allowed,
+                )
+            else:
+                await channel.send(embed=embed)
 
 
 async def get_guild_birthdays(guild_id: int) -> dict[str, str]:
@@ -1796,72 +1824,95 @@ class SetupPagerView(discord.ui.View):
         embed.set_footer(text="Admin-only • /setup")
         return embed
 
-def make_features_embed(self) -> discord.Embed:
-    embed = discord.Embed(
-        title="Admin Bot Features",
-        description="Overview of what this bot does for your server.",
-        color=discord.Color.blurple(),
-    )
+    def make_features_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Admin Bot Features",
+            description="Overview of what this bot does for your server.",
+            color=discord.Color.blurple(),
+        )
 
-    embed.add_field(
-        name="Onboarding & Roles",
-        value=(
-            "• Welcome messages for new members\n"
-            "• Delayed member join roles\n"
-            "• Auto roles for bots\n"
-            "• Birthday role + birthday announcements"
-        ),
-        inline=False,
-    )
+        embed.add_field(
+            name="Onboarding & Roles",
+            value=(
+                "• Welcome messages for new members\n"
+                "• Delayed member-join role\n"
+                "• Auto roles for new bots\n"
+                "• Birthday role + birthday announcements\n"
+                "• Optional Active Member role based on activity"
+            ),
+            inline=False,
+        )
 
-    embed.add_field(
-        name="Dead Chat, Plague & Prizes",
-        value=(
-            "• Dead Chat idle tracking & role steals\n"
-            "• Monthly plague days (infection role)\n"
-            "• Scheduled prize drops linked to Dead Chat\n"
-            "• Prize buttons with claim + announce flow"
-        ),
-        inline=False,
-    )
+        embed.add_field(
+            name="Birthdays & QOTD",
+            value=(
+                "• Members can register their birthdays\n"
+                "• Shared birthday list + public birthday message\n"
+                "• Daily Question of the Day from Google Sheets\n"
+                "• Optional QOTD ping role for people who want pings"
+            ),
+            inline=False,
+        )
 
-    embed.add_field(
-        name="Activity & Cleanup",
-        value=(
-            "• Tracks last activity per member\n"
-            "• Active role for engaged members\n"
-            "• Auto-delete channels with ignore phrases\n"
-            "• Sticky messages that stay on top"
-        ),
-        inline=False,
-    )
+        embed.add_field(
+            name="Dead Chat, Plague & Prizes",
+            value=(
+                "• Dead Chat idle tracking & role steals\n"
+                "• Monthly plague days with infection role\n"
+                "• Scheduled prize drops linked to Dead Chat\n"
+                "• Prize buttons with claim + announce flow"
+            ),
+            inline=False,
+        )
 
-    embed.add_field(
-        name="Twitch & Logging",
-        value=(
-            "• Watch multiple Twitch channels\n"
-            "• Live notifications with custom text\n"
-            "• Member join/leave/ban/kick logs\n"
-            "• Bot join/leave/ban logs"
-        ),
-        inline=False,
-    )
+        embed.add_field(
+            name="Activity, Cleanup & Sticky",
+            value=(
+                "• Tracks last activity per member\n"
+                "• Removes Active role after inactivity\n"
+                "• Auto-delete channels with ignore phrases\n"
+                "• Sticky messages that stay on top in a channel"
+            ),
+            inline=False,
+        )
 
-    embed.add_field(
-        name="Utility & Admin Tools",
-        value=(
-            "• `/send_msg` — send a custom bot message\n"
-            "• `/edit_msg` — edit existing bot messages"
-            "• `/theme_update` — force-refresh today's seasonal theme"
-        ),
-        inline=False,
-    )
+        embed.add_field(
+            name="Twitch & Logging",
+            value=(
+                "• Watch multiple Twitch channels\n"
+                "• Live notifications with customizable text\n"
+                "• Member join/leave/ban/kick logs\n"
+                "• Bot join/leave/ban logs"
+            ),
+            inline=False,
+        )
 
-    embed.set_footer(text="Use the buttons below to switch pages.")
-    return embed
+        embed.add_field(
+            name="Voice & Seasonal Themes",
+            value=(
+                "• Voice-channel ↔ role links (VC join = get role)\n"
+                "• Automatic seasonal themes (Halloween / Christmas)\n"
+                "• Manual theme mode: auto / none / halloween / christmas"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Utility & Admin Tools",
+            value=(
+                "• Send or edit messages as the bot\n"
+                "• View current config and raw DB config\n"
+                "• Database health check command\n"
+                "• Full setup checklist in this view"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="Use the buttons below to switch pages.")
+        return embed
 
 
-    def make_commands_embed(self) -> discord.Embed:
+        def make_commands_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="Admin Bot Setup Checklist",
             description="Run these commands to configure all features.",
@@ -1873,10 +1924,11 @@ def make_features_embed(self) -> discord.Embed:
             value=(
                 "> `/welcome_channel` - Set the welcome channel.\n"
                 "> `/birthday_announce_channel` - Set birthday announcements.\n"
-                "> `/twitch_stream_channel` - Set Twitch live alerts.\n"
+                "> `/qotd_set_channel` - Choose the QOTD channel.\n"
+                "> `/twitch_stream_channel` - Set default Twitch alert channel.\n"
                 "> `/deadchat_trigger_channels` - Add Dead Chat channels.\n"
-                "> `/prize_announce_channel` - Set prize announcement channel.\n"
                 "> `/prize_channel` - Set prize drop channel.\n"
+                "> `/prize_announce_channel` - Set prize announcement channel.\n"
                 "> `/log_channel_members` - Set member log channel.\n"
                 "> `/log_channel_bots` - Set bot log channel.\n"
                 "> `/auto_delete_channel` - Add auto-delete channels."
@@ -1898,60 +1950,98 @@ def make_features_embed(self) -> discord.Embed:
         )
 
         embed.add_field(
+            name="BIRTHDAYS & QOTD",
+            value=(
+                "> `/birthday_set` - Members share their birthday.\n"
+                "> `/birthday_set_for` - Admin sets a member's birthday.\n"
+                "> `/birthday_remove` - Remove a member's birthday.\n"
+                "> `/birthday_list` - View server birthday list.\n"
+                "> `/birthday_public` - Create/refresh public birthday message.\n"
+                "> `/birthday_announce_send` - Manually send a birthday message.\n"
+                "> `/qotd_enable` - Enable daily QOTD.\n"
+                "> `/qotd_disable` - Disable daily QOTD.\n"
+                "> `/qotd_ping_role` - Set or clear the optional QOTD ping role."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
             name="TEXT & MESSAGES",
             value=(
-                "> `/birthday_msg` - Set birthday message text.\n"
+                "> `/birthday_msg` - Set birthday announcement text.\n"
                 "> `/twitch_msg` - Set Twitch alert text.\n"
-                "> `/plague_msg` - Set plague alert text.\n"
-                "> `/sticky_message` - Set or clear sticky messages."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="AUTO DELETE",
-            value=(
-                "> `/auto_delete_delay` - Set deletion delay.\n"
-                "> `/auto_delete_filters` - Add ignore phrases."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="TWITCH & ACTIVITY",
-            value=(
-                "> `/twitch_channel` - Add a Twitch channel.\n"
-                "> `/active_member_role_add` - Mark a user active."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="PRIZES & DEADCHAT",
-            value=(
-                "> `/prize_add` - Add a prize.\n"
-                "> `/prize_day` - Schedule or drop a prize.\n"
-                "> `/prize_announce_send` - Announce a winner.\n"
-                "> `/prize_list` - View scheduled prizes.\n"
-                "> `/prize_delete` - Remove a prize.\n"
-                "> `/plague_day` - Schedule a plague day.\n"
-                "> `/deadchat_scan` - Refresh Dead Chat timestamps."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="UTILITY",
-            value=(
+                "> `/plague_msg` - Set plague outbreak message.\n"
+                "> `/sticky_message` - Set or clear sticky messages.\n"
                 "> `/send_msg` - Make the bot send a message.\n"
-                "> `/edit_msg` - Edit a bot message.\n"
-                "> `/theme_update` - Force-refresh today's theme.\n"
-                "> `/birthday_announce_send` - Send a birthday message."
+                "> `/edit_msg` - Edit a bot message."
             ),
             inline=False,
         )
 
-        embed.set_footer(text="Use the buttons below to switch pages.")
+        embed.add_field(
+            name="AUTO DELETE & ACTIVITY",
+            value=(
+                "> `/auto_delete_delay` - Set deletion delay for auto-delete channels.\n"
+                "> `/auto_delete_filters` - Add phrases that never get deleted.\n"
+                "> `/active_member_role_add` - Mark a member active right now."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="TWITCH",
+            value=(
+                "> `/twitch_channel` - Add a Twitch channel and announce target."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="PRIZES, DEAD CHAT & PLAGUE",
+            value=(
+                "> `/prize_add` - Define a prize title + rarity.\n"
+                "> `/prize_day` - Schedule or instantly drop a prize.\n"
+                "> `/prize_list` - View scheduled prize drops.\n"
+                "> `/prize_delete` - Delete a scheduled prize.\n"
+                "> `/prize_announce_send` - Manually announce a prize winner.\n"
+                "> `/plague_day` - Schedule a plague day.\n"
+                "> `/deadchat_scan` - Rescan Dead Chat channels for last message."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="VOICE CHANNEL ROLES",
+            value=(
+                "> `/vc_role_link` - Link a voice channel to a role.\n"
+                "> `/vc_role_unlink` - Remove a VC → role link.\n"
+                "> `/vc_role_list` - List all VC role links."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="THEMES",
+            value=(
+                "> `/theme_enable` - Enable seasonal themes.\n"
+                "> `/theme_disable` - Disable seasonal themes.\n"
+                "> `/theme_mode` - Set mode: auto / none / halloween / christmas.\n"
+                "> `/theme_update` - Force-refresh today's theme now."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="CONFIG & DEBUG",
+            value=(
+                "> `/config_show` - Show the current config for this server.\n"
+                "> `/config_db_show` - Show raw DB config row.\n"
+                "> `/db_test` - Test connection to the Postgres database."
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="Use this checklist to finish setup for each server.")
         return embed
 
     def refresh_button_styles(self):
@@ -2786,6 +2876,62 @@ async def qotd_disable(ctx):
         )
 
     await ctx.respond("QOTD disabled.", ephemeral=True)
+
+@bot.slash_command(
+    name="qotd_ping_role",
+    description="Admin: set or clear the optional QOTD ping role."
+)
+async def qotd_ping_role(
+    ctx,
+    action: discord.Option(str, choices=["set", "clear"], required=True),
+    role: discord.Option(
+        discord.Role,
+        "Role to ping for QOTD (use with 'set')",
+        required=False
+    ) = None,
+):
+    # Admin / owner check
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    # SET: store the chosen role id in ping_role_id
+    if action == "set":
+        if role is None:
+            return await ctx.respond("You must pick a role when using `set`.", ephemeral=True)
+
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO qotd_settings (guild_id, channel_id, enabled, ping_role_id)
+                VALUES ($1, 0, TRUE, $2)
+                ON CONFLICT (guild_id) DO UPDATE
+                    SET ping_role_id = EXCLUDED.ping_role_id
+                """,
+                ctx.guild.id,
+                role.id,
+            )
+
+        return await ctx.respond(
+            f"QOTD ping role set to {role.mention}. Members with this role will be pinged on QOTD.",
+            ephemeral=True,
+        )
+
+    # CLEAR: set ping_role_id back to 0 (no pings)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO qotd_settings (guild_id, channel_id, enabled, ping_role_id)
+            VALUES ($1, 0, TRUE, 0)
+            ON CONFLICT (guild_id) DO UPDATE
+                SET ping_role_id = EXCLUDED.ping_role_id
+            """,
+            ctx.guild.id,
+        )
+
+    await ctx.respond("Cleared the QOTD ping role. QOTD will no longer ping anyone.", ephemeral=True)
 
 @bot.slash_command(
     name="theme_enable",
