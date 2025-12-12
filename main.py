@@ -1176,32 +1176,23 @@ class SetupView(discord.ui.View):
         text = """
 **Channel Setup Commands**
 
-`/welcome_channel`
-- Set the default welcome channel.
+`/welcome_channel` - Set the default welcome channel.
 
-`/birthday_announce_channel`
-- Channel where birthday messages are posted.
+`/birthday_announce_channel` - Channel where birthday messages are posted.
 
-`/twitch_stream_channel`
-- Default channel for Twitch live notifications.
+`/twitch_stream_channel` - Default channel for Twitch live notifications.
 
-/`deadchat_trigger_channels`
-- Add channels that count for Dead Chat steals.
+`/deadchat_trigger_channels` - Add channels that count for Dead Chat steals.
 
-/`prize_announce_channel`
-- Channel where prize wins are announced.
+`/prize_announce_channel` - Channel where prize wins are announced.
 
-/`prize_channel`
-- Channel where prize drops appear.
+`/prize_channel` - Channel where prize drops appear.
 
-/`log_channel_members`
-- Member join/leave/ban/kick logs.
+`/log_channel_members` - Member join/leave/ban/kick logs.
 
-/`log_channel_bots`
-- Bot join/leave/ban logs.
+`/log_channel_bots` - Bot join/leave/ban logs.
 
-/`auto_delete_channel`
-- Add a channel to the auto-delete system.
+`/auto_delete_channel` - Add a channel to the auto-delete message system.
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -1210,23 +1201,17 @@ class SetupView(discord.ui.View):
         text = """
 **Role Setup Commands**
 
-`/active_member_role`
-- Role given to active members (via activity tracking).
+`/active_member_role` - Role given to active members (via activity tracking).
 
-`/birthday_role`
-- Role used to mark someone's birthday.
+`/birthday_role` - Role used to mark someone's birthday.
 
-/`deadchat_role`
-- Role that represents the current Dead Chat holder.
+`/deadchat_role` - Role that represents the current Dead Chat holder.
 
-/`plague_role`
-- Role used when someone gets infected by the plague.
+`/plague_role` - Role used when someone gets infected by the plague.
 
-/`member_join_role`
-- Role given to members after a short delay when they join.
+`/member_join_role` - Role given to members after a short delay when they join.
 
-/`bot_join_role`
-- Role given automatically to bots when they join.
+`/bot_join_role` - Role given automatically to bots when they join.
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -1235,17 +1220,13 @@ class SetupView(discord.ui.View):
         text = """
 **Message / Text Template Commands**
 
-`/birthday_msg`
-- Set the birthday announcement template text.
+`/birthday_msg` - Set the birthday announcement template text.
 
-`/twitch_msg`
-- Set the Twitch "went live" announcement template text.
+`/twitch_msg` - Set the Twitch "went live" announcement template text.
 
-`/plague_msg`
-- Set the "plague outbreak" Dead Chat infection message.
+`/plague_msg` - Set the "plague outbreak" Dead Chat infection message.
 
-/`sticky_message`
-- Set or clear a sticky message in the current channel.
+`/sticky_message` - Set or clear a sticky message in the current channel.
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -1254,14 +1235,11 @@ class SetupView(discord.ui.View):
         text = """
 **Auto Delete Settings**
 
-`/auto_delete_channel`
-- Add channels that should auto-delete messages.
+`/auto_delete_channel` - Add channels that should auto-delete messages.
 
-/`auto_delete_delay`
-- Set how long messages last before deletion (seconds).
+/`auto_delete_delay` - Set how long messages last before deletion (seconds).
 
-`/auto_delete_filters`
-- Add phrases that **never** get auto-deleted in those channels.
+`/auto_delete_filters` - Add phrases that **never** get auto-deleted in those channels.
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -1270,14 +1248,11 @@ class SetupView(discord.ui.View):
         text = """
 **Twitch & Activity Commands**
 
-`/twitch_stream_channel`
-- Default channel for all stream notifications.
+`/twitch_stream_channel` - Default channel for all stream notifications.
 
-/`twitch_channel`
-- Add a specific Twitch channel to watch and where to announce it.
+`/twitch_channel` - Add a specific Twitch channel to watch and where to announce it.
 
-/`active_member_role_add`
-- Manually mark someone as active right now (gives active role if configured).
+`/active_member_role_add` - Manually mark someone as active right now (gives active role if configured).
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -1286,26 +1261,19 @@ class SetupView(discord.ui.View):
         text = """
 **Prizes & Dead Chat / Plague**
 
-`/prize_add`
-- Define a prize title + drop rarity.
+`/prize_add` - Define a prize title + drop rarity.
 
-/`prize_day`
-- Schedule a prize drop for a specific date or drop one immediately.
+`/prize_day` - Schedule a prize drop for a specific date or drop one immediately.
 
-/`prize_announce_send`
-- Manually announce a prize winner.
+`/prize_announce_send` - Manually announce a prize winner.
 
-/`prize_list`
-- List all scheduled prize drops.
+`/prize_list` - List all scheduled prize drops.
 
-/`prize_delete`
-- Delete a scheduled prize by ID.
+`/prize_delete` - Delete a scheduled prize by ID.
 
-/`plague_day`
-- Schedule (or trigger today) a plague day; first Dead Chat steal after the set hour gets infected.
+`/plague_day` - Schedule (or trigger today) a plague day; first Dead Chat steal after the set hour gets infected.
 
-/`deadchat_scan`
-- Scan Dead Chat channels to refresh last-message timestamps (fixes idle detection after long downtime).
+`/deadchat_scan` - Scan Dead Chat channels to refresh last-message timestamps (fixes idle detection after long downtime).
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -1314,14 +1282,11 @@ class SetupView(discord.ui.View):
         text = """
 **Utility & Manual Commands**
 
-`/send_msg`
-- Make the bot send a custom message in the current channel.
+`/send_msg` - Make the bot send a custom message in the current channel.
 
-/`edit_msg`
-- Edit an existing bot message by ID.
+`/edit_msg` - Edit an existing bot message by ID.
 
-/`birthday_announce_send`
-- Manually send the birthday message for a specific member.
+`/birthday_announce_send` - Manually send the birthday message for a specific member.
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -1331,51 +1296,51 @@ class SetupView(discord.ui.View):
 **Full Setup Checklist**
 
 CHANNELS:
-/welcome_channel
-/birthday_announce_channel
-/twitch_stream_channel
-/deadchat_trigger_channels
-/prize_announce_channel
-/prize_channel
-/log_channel_members
-/log_channel_bots
-/auto_delete_channel
+`/welcome_channel`
+`/birthday_announce_channel`
+`/twitch_stream_channel`
+`/deadchat_trigger_channels`
+`/prize_announce_channel`
+`/prize_channel`
+`/log_channel_members`
+`/log_channel_bots`
+`/auto_delete_channel`
 
 ROLES:
-/active_member_role
-/birthday_role
-/deadchat_role
-/plague_role
-/member_join_role
-/bot_join_role
+`/active_member_role`
+`/birthday_role`
+`/deadchat_role`
+`/plague_role`
+`/member_join_role`
+`/bot_join_role`
 
 TEXT & MESSAGES:
-/birthday_msg
-/twitch_msg
-/plague_msg
-/sticky_message
+`/birthday_msg`
+`/twitch_msg`
+`/plague_msg`
+`/sticky_message`
 
 AUTO DELETE:
-/auto_delete_delay
-/auto_delete_filters
+`/auto_delete_delay`
+`/auto_delete_filters`
 
 TWITCH & ACTIVITY:
-/twitch_channel
-/active_member_role_add
+`/twitch_channel`
+`/active_member_role_add`
 
 PRIZES & DEADCHAT:
-/prize_add
-/prize_day
-/prize_announce_send
-/prize_list
-/prize_delete
-/plague_day
-/deadchat_scan
+`/prize_add`
+`/prize_day`
+`/prize_announce_send`
+`/prize_list`
+`/prize_delete`
+`/plague_day`
+`/deadchat_scan`
 
 UTILITY:
-/send_msg
-/edit_msg
-/birthday_announce_send
+`/send_msg`
+`/edit_msg`
+`/birthday_announce_send`
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -1704,7 +1669,7 @@ async def on_error(event, *args, **kwargs):
 
 
 ############### COMMAND GROUPS ###############
-@bot.slash_command(name="db_test", description="Test Postgres connectivity")
+@bot.slash_command(name="db_test", description="Test the bot's connection to the Postgres database.")
 async def db_test(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
@@ -1716,6 +1681,7 @@ async def db_test(ctx):
     except Exception as e:
         return await ctx.respond(f"DB error: {e}", ephemeral=True)
     await ctx.respond(f"DB OK, SELECT 1 returned: {value}", ephemeral=True)
+
 
 async def _update_guild_config(ctx, updates: dict, summary_label: str):
     if not ctx.author.guild_permissions.administrator:
@@ -1736,7 +1702,11 @@ async def _update_guild_config(ctx, updates: dict, summary_label: str):
             all_twitch_channels.add(tc["username"].lower())
     return cfg
 
-@bot.slash_command(name="deadchat_scan", description="Force-scan all dead-chat channels for latest message timestamps")
+
+@bot.slash_command(
+    name="deadchat_scan",
+    description="Scan Dead Chat channels and refresh idle timestamps."
+)
 async def deadchat_rescan(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
@@ -1757,9 +1727,16 @@ async def deadchat_rescan(ctx):
             except Exception as e:
                 await log_exception("deadchat_rescan_history", e)
         await save_deadchat_storage()
-    await ctx.respond(f"Rescan complete — found latest message in {count} dead-chat channels and saved timestamps.", ephemeral=True)
+    await ctx.respond(
+        f"Rescan complete — found latest message in {count} dead-chat channels and saved timestamps.",
+        ephemeral=True
+    )
 
-@bot.slash_command(name="config_show", description="Show this server's Admin Bot config")
+
+@bot.slash_command(
+    name="config_show",
+    description="Show the current configuration for this server."
+)
 async def config_show(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
@@ -1769,7 +1746,11 @@ async def config_show(ctx):
         text = text[:1900] + "\n...[truncated]"
     await ctx.respond(f"```json\n{text}\n```", ephemeral=True)
 
-@bot.slash_command(name="config_db_show", description="Show this server's Admin Bot config from the database")
+
+@bot.slash_command(
+    name="config_db_show",
+    description="Show the raw database configuration for this server."
+)
 async def config_db_show(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
@@ -1795,9 +1776,10 @@ async def config_db_show(ctx):
         text = text[:1900] + "\n...[truncated]"
     await ctx.respond(f"```json\n{text}\n```", ephemeral=True)
 
+
 @bot.slash_command(
     name="setup",
-    description="Open Admin Bot setup helper"
+    description="Open the interactive Admin Bot setup helper."
 )
 async def setup(ctx):
     if not ctx.author.guild_permissions.administrator:
@@ -1828,14 +1810,22 @@ async def setup(ctx):
     view = SetupView()
     await ctx.respond(embed=embed, view=view, ephemeral=True)
 
-@bot.slash_command(name="send_msg", description="Make the bot say something right here")
+
+@bot.slash_command(
+    name="send_msg",
+    description="Make the bot send a custom message in this channel."
+)
 async def say(ctx, message: discord.Option(str, "Message to send", required=True)):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("You need Administrator.", ephemeral=True)
     await ctx.channel.send(message.replace("\\n", "\n"))
     await ctx.respond("Sent!", ephemeral=True)
 
-@bot.slash_command(name="edit_msg", description="Edit a bot message in this channel with up to 4 lines")
+
+@bot.slash_command(
+    name="edit_msg",
+    description="Edit a bot message in this channel by ID."
+)
 async def editbotmsg(
     ctx,
     message_id: discord.Option(str, "Message ID", required=True),
@@ -1876,13 +1866,19 @@ async def editbotmsg(
     await msg.edit(content=new_content)
     await ctx.respond("Message updated.", ephemeral=True)
 
-@bot.slash_command(name="birthday_announce_send", description="Manually send the birthday message for a member")
+
+@bot.slash_command(
+    name="birthday_announce_send",
+    description="Manually send a birthday message for a member."
+)
 async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member", required=True)):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("You need Administrator.", ephemeral=True)
     guild = ctx.guild
     cfg = await ensure_guild_config(guild)
-    ch = await get_config_channel(guild, "birthday_announce_channel_id") or await get_config_channel(guild, "welcome_channel_id")
+    ch = await get_config_channel(guild, "birthday_announce_channel_id") or await get_config_channel(
+        guild, "welcome_channel_id"
+    )
     if not ch:
         return await ctx.respond("Announce channel not found.", ephemeral=True)
     text = cfg.get("birthday_text", DEFAULT_BIRTHDAY_TEXT)
@@ -1891,7 +1887,11 @@ async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member"
     await log_to_guild_bot_channel(guild, f"[BIRTHDAY] Manual birthday announce sent for {member.mention} by {ctx.author.mention}.")
     await ctx.respond(f"Sent birthday message for {member.mention}.", ephemeral=True)
 
-@bot.slash_command(name="active_member_role_add", description="Mark a member as active right now")
+
+@bot.slash_command(
+    name="active_member_role_add",
+    description="Mark a member as active right now (gives active role)."
+)
 async def activity_add(
     ctx,
     member: discord.Option(discord.Member, "Member to mark active", required=True),
@@ -1901,7 +1901,11 @@ async def activity_add(
     await touch_member_activity(member)
     await ctx.respond(f"{member.mention} marked active and given the active role.", ephemeral=True)
 
-@bot.slash_command(name="prize_list", description="List scheduled prizes")
+
+@bot.slash_command(
+    name="prize_list",
+    description="View all scheduled Dead Chat prize drops."
+)
 async def prize_list(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
@@ -1915,7 +1919,11 @@ async def prize_list(ctx):
     text = "\n".join(lines)
     await ctx.respond(f"Scheduled prizes:\n{text}", ephemeral=True)
 
-@bot.slash_command(name="prize_delete", description="Delete a scheduled prize")
+
+@bot.slash_command(
+    name="prize_delete",
+    description="Delete a scheduled prize drop by ID."
+)
 async def prize_delete(
     ctx,
     prize_id: discord.Option(int, "ID from /prize_list", required=True),
@@ -1933,7 +1941,11 @@ async def prize_delete(
     await save_guild_config_db(ctx.guild, cfg)
     await ctx.respond(f"Deleted scheduled prize ID {prize_id}.", ephemeral=True)
 
-@bot.slash_command(name="prize_day")
+
+@bot.slash_command(
+    name="prize_day",
+    description="Schedule or instantly drop a Dead Chat prize."
+)
 async def schedule_prize(
     ctx,
     title: discord.Option(str, "Prize title", required=True),
@@ -1944,18 +1956,21 @@ async def schedule_prize(
         return await ctx.respond("Admin only.", ephemeral=True)
 
     guild = ctx.guild
-    
+
     cfg = await get_guild_config(ctx.guild)
     defs = cfg.get("prize_defs", {})
     rarity = defs.get(title)
     if not rarity:
-        return await ctx.respond(f"Prize '{title}' not defined. Use /add_prize first.", ephemeral=True)
+        return await ctx.respond(f"Prize '{title}' not defined. Use /prize_add first.", ephemeral=True)
     content = f"**YOU'VE FOUND A PRIZE!**\nPrize: *{title}*\nDrop Rate: *{rarity}*"
     if month is None and day is None:
         drop_ch = guild.get_channel(cfg.get("prize_drop_channel_id")) or ctx.channel
         view = PrizeView(title, rarity)
         await drop_ch.send(content, view=view)
-        await log_to_guild_bot_channel(ctx.guild, f"[PRIZE] Immediate prize drop '{title}' triggered by {ctx.author.mention} in {drop_ch.mention}.")
+        await log_to_guild_bot_channel(
+            ctx.guild,
+            f"[PRIZE] Immediate prize drop '{title}' triggered by {ctx.author.mention} in {drop_ch.mention}."
+        )
         return await ctx.respond(f"Prize drop sent in {drop_ch.mention}.", ephemeral=True)
     if month is None or day is None:
         return await ctx.respond("Provide month and day, or leave both blank.", ephemeral=True)
@@ -1974,11 +1989,25 @@ async def schedule_prize(
             return await ctx.respond("Invalid date.", ephemeral=True)
     date_str = target.strftime("%Y-%m-%d")
     await add_scheduled_prize(ctx.guild, title, ctx.channel.id, content, date_str)
-    await log_to_guild_bot_channel(ctx.guild, f"[PRIZE] Scheduled prize '{title}' on {date_str} by {ctx.author.mention} for {ctx.channel.mention}.")
-    await ctx.respond(f"Scheduled for {date_str} (triggers on first Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC).", ephemeral=True)
+    await log_to_guild_bot_channel(
+        ctx.guild,
+        f"[PRIZE] Scheduled prize '{title}' on {date_str} by {ctx.author.mention} for {ctx.channel.mention}."
+    )
+    await ctx.respond(
+        f"Scheduled for {date_str} (triggers on first Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC).",
+        ephemeral=True
+    )
 
-@bot.slash_command(name="prize_announce_send")
-async def prize_announce(ctx, member: discord.Option(discord.Member, required=True), prize: discord.Option(str, "Prize title", required=True)):
+
+@bot.slash_command(
+    name="prize_announce_send",
+    description="Manually announce a Dead Chat prize winner."
+)
+async def prize_announce(
+    ctx,
+    member: discord.Option(discord.Member, "Member", required=True),
+    prize: discord.Option(str, "Prize title", required=True),
+):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
     guild = ctx.guild
@@ -1997,11 +2026,22 @@ async def prize_announce(ctx, member: discord.Option(discord.Member, required=Tr
         rarity=rarity
     )
     await ctx.channel.send(msg)
-    await log_to_guild_bot_channel(guild, f"[PRIZE] Manual prize announce: {member.mention} → '{prize}' (rarity {rarity}) by {ctx.author.mention}.")
-    await ctx.respond("announce sent.", ephemeral=True)
+    await log_to_guild_bot_channel(
+        guild,
+        f"[PRIZE] Manual prize announce: {member.mention} → '{prize}' (rarity {rarity}) by {ctx.author.mention}."
+    )
+    await ctx.respond("Announce sent.", ephemeral=True)
 
-@bot.slash_command(name="sticky_message")
-async def sticky(ctx, action: discord.Option(str, choices=["set", "clear"], required=True), text: discord.Option(str, required=False)):
+
+@bot.slash_command(
+    name="sticky_message",
+    description="Set or clear a sticky message in this channel."
+)
+async def sticky(
+    ctx,
+    action: discord.Option(str, choices=["set", "clear"], required=True),
+    text: discord.Option(str, required=False),
+):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
     if action == "set":
@@ -2014,17 +2054,26 @@ async def sticky(ctx, action: discord.Option(str, choices=["set", "clear"], requ
                 msg = await ctx.channel.fetch_message(old_id)
                 await msg.edit(content=text)
                 await ctx.respond("Sticky updated.", ephemeral=True)
-                await log_to_guild_bot_channel(ctx.guild, f"[STICKY] Updated sticky in {ctx.channel.mention} by {ctx.author.mention}.")
+                await log_to_guild_bot_channel(
+                    ctx.guild,
+                    f"[STICKY] Updated sticky in {ctx.channel.mention} by {ctx.author.mention}."
+                )
             except discord.NotFound:
                 msg = await ctx.channel.send(text)
                 sticky_messages[ctx.channel.id] = msg.id
                 await ctx.respond("Sticky created.", ephemeral=True)
-                await log_to_guild_bot_channel(ctx.guild, f"[STICKY] Created sticky in {ctx.channel.mention} by {ctx.author.mention}.")
+                await log_to_guild_bot_channel(
+                    ctx.guild,
+                    f"[STICKY] Created sticky in {ctx.channel.mention} by {ctx.author.mention}."
+                )
         else:
             msg = await ctx.channel.send(text)
             sticky_messages[ctx.channel.id] = msg.id
             await ctx.respond("Sticky created.", ephemeral=True)
-            await log_to_guild_bot_channel(ctx.guild, f"[STICKY] Created sticky in {ctx.channel.mention} by {ctx.author.mention}.")
+            await log_to_guild_bot_channel(
+                ctx.guild,
+                f"[STICKY] Created sticky in {ctx.channel.mention} by {ctx.author.mention}."
+            )
         await save_stickies()
     else:
         old_id = sticky_messages.pop(ctx.channel.id, None)
@@ -2037,9 +2086,16 @@ async def sticky(ctx, action: discord.Option(str, choices=["set", "clear"], requ
                 pass
         await save_stickies()
         await ctx.respond("Sticky cleared.", ephemeral=True)
-        await log_to_guild_bot_channel(ctx.guild, f"[STICKY] Cleared sticky in {ctx.channel.mention} by {ctx.author.mention}.")
+        await log_to_guild_bot_channel(
+            ctx.guild,
+            f"[STICKY] Cleared sticky in {ctx.channel.mention} by {ctx.author.mention}."
+        )
 
-@bot.slash_command(name="plague_day", description="Schedule a contagious Dead Chat day")
+
+@bot.slash_command(
+    name="plague_day",
+    description="Schedule a plague day; first Dead Chat steal gets infected."
+)
 async def plague_infect(
     ctx,
     month: discord.Option(str, "Month", required=False, choices=MONTH_CHOICES),
@@ -2073,35 +2129,72 @@ async def plague_infect(
     cfg = await get_guild_config(ctx.guild)
     updates = {"plague_scheduled": plague_scheduled[guild_id]}
     await _update_guild_config(ctx, updates, "plague schedule")
-    await log_to_guild_bot_channel(ctx.guild, f"[PLAGUE] Plague scheduled for {date_str} by {ctx.author.mention}.")
+    await log_to_guild_bot_channel(
+        ctx.guild,
+        f"[PLAGUE] Plague scheduled for {date_str} by {ctx.author.mention}."
+    )
     if month is None:
-        await ctx.respond(f"Plague set for today. First Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC will be infected.", ephemeral=True)
+        await ctx.respond(
+            f"Plague set for today. First Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC will be infected.",
+            ephemeral=True
+        )
     else:
-        await ctx.respond(f"Plague scheduled for {date_str}. First Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC will be infected.", ephemeral=True)
+        await ctx.respond(
+            f"Plague scheduled for {date_str}. First Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC will be infected.",
+            ephemeral=True
+        )
 
-@bot.slash_command(name="welcome_channel")
-async def add_channel_welcome(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+
+@bot.slash_command(
+    name="welcome_channel",
+    description="Set the default welcome channel for new members."
+)
+async def add_channel_welcome(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
     updates = {"welcome_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "welcome channel")
     if cfg:
         await ctx.respond(f"Set welcome channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="birthday_announce_channel")
-async def add_channel_birthday_announce(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+
+@bot.slash_command(
+    name="birthday_announce_channel",
+    description="Set the channel where birthday messages are posted."
+)
+async def add_channel_birthday_announce(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
     updates = {"birthday_announce_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "birthday announce channel")
     if cfg:
         await ctx.respond(f"Set birthday announce channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="twitch_stream_channel")
-async def add_channel_twitch_announce(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+
+@bot.slash_command(
+    name="twitch_stream_channel",
+    description="Set the default channel for Twitch live notifications."
+)
+async def add_channel_twitch_announce(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
     updates = {"twitch_announce_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "twitch announce channel")
     if cfg:
         await ctx.respond(f"Set twitch announce channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="deadchat_trigger_channels")
-async def add_channel_dead_chat_triggers(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+
+@bot.slash_command(
+    name="deadchat_trigger_channels",
+    description="Add a channel that counts for Dead Chat steals."
+)
+async def add_channel_dead_chat_triggers(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
     cfg = await get_guild_config(ctx.guild)
     ids = cfg.get("dead_chat_channel_ids", [])
     if channel.id in ids:
@@ -2113,36 +2206,71 @@ async def add_channel_dead_chat_triggers(ctx, channel: discord.Option(discord.Te
     if new_cfg:
         await ctx.respond(f"Added {channel.mention} to dead chat triggers.", ephemeral=True)
 
-@bot.slash_command(name="prize_announce_channel")
-async def add_channel_prize_announce(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+
+@bot.slash_command(
+    name="prize_announce_channel",
+    description="Set the channel where prize wins are announced."
+)
+async def add_channel_prize_announce(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
     updates = {"prize_announce_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "prize announce channel")
     if cfg:
         await ctx.respond(f"Set prize announce channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="log_channel_members")
-async def add_channel_member_log(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+
+@bot.slash_command(
+    name="log_channel_members",
+    description="Set the member join/leave/ban/kick log channel."
+)
+async def add_channel_member_log(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
     updates = {"mod_log_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "member log channel")
     if cfg:
         await ctx.respond(f"Set member log channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="log_channel_bots")
-async def add_channel_bot_log(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+
+@bot.slash_command(
+    name="log_channel_bots",
+    description="Set the bot join/leave/ban log channel."
+)
+async def add_channel_bot_log(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
     updates = {"bot_log_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "bot log channel")
     if cfg:
         await ctx.respond(f"Set bot log channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="prize_channel")
-async def add_channel_prize_drop(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+
+@bot.slash_command(
+    name="prize_channel",
+    description="Set the channel where prize drops appear."
+)
+async def add_channel_prize_drop(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
     updates = {"prize_drop_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "prize drop channel")
     if cfg:
         await ctx.respond(f"Set prize drop channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="auto_delete_channel")
-async def add_channel_auto_delete(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+
+@bot.slash_command(
+    name="auto_delete_channel",
+    description="Add a channel to the auto-delete system."
+)
+async def add_channel_auto_delete(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
     cfg = await ensure_guild_config(ctx.guild)
     ids = cfg.get("auto_delete_channel_ids", [])
     if channel.id in ids:
@@ -2155,71 +2283,142 @@ async def add_channel_auto_delete(ctx, channel: discord.Option(discord.TextChann
     if new_cfg:
         await ctx.respond(f"Added {channel.mention} to auto delete channels.", ephemeral=True)
 
-@bot.slash_command(name="active_member_role")
-async def add_role_active(ctx, role: discord.Option(discord.Role, required=True)):
+
+@bot.slash_command(
+    name="active_member_role",
+    description="Set the role used for active members."
+)
+async def add_role_active(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
     updates = {"active_role_id": role.id}
     cfg = await _update_guild_config(ctx, updates, "active role")
     if cfg:
         await ctx.respond(f"Set active role to {role.mention}", ephemeral=True)
 
-@bot.slash_command(name="birthday_role")
-async def add_role_birthday(ctx, role: discord.Option(discord.Role, required=True)):
+
+@bot.slash_command(
+    name="birthday_role",
+    description="Set the role used to mark birthdays."
+)
+async def add_role_birthday(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
     updates = {"birthday_role_id": role.id}
     cfg = await _update_guild_config(ctx, updates, "birthday role")
     if cfg:
         await ctx.respond(f"Set birthday role to {role.mention}", ephemeral=True)
 
-@bot.slash_command(name="deadchat_role")
-async def add_role_dead_chat(ctx, role: discord.Option(discord.Role, required=True)):
+
+@bot.slash_command(
+    name="deadchat_role",
+    description="Set the role given to the current Dead Chat holder."
+)
+async def add_role_dead_chat(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
     updates = {"dead_chat_role_id": role.id}
     cfg = await _update_guild_config(ctx, updates, "dead chat role")
     if cfg:
         await ctx.respond(f"Set dead chat role to {role.mention}", ephemeral=True)
 
-@bot.slash_command(name="plague_role")
-async def add_role_infected(ctx, role: discord.Option(discord.Role, required=True)):
+
+@bot.slash_command(
+    name="plague_role",
+    description="Set the role used for plague infections."
+)
+async def add_role_infected(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
     updates = {"infected_role_id": role.id}
     cfg = await _update_guild_config(ctx, updates, "infected role")
     if cfg:
         await ctx.respond(f"Set infected role to {role.mention}", ephemeral=True)
 
-@bot.slash_command(name="member_join_role")
-async def add_role_member_join(ctx, role: discord.Option(discord.Role, required=True)):
+
+@bot.slash_command(
+    name="member_join_role",
+    description="Set the role given to members after a short delay."
+)
+async def add_role_member_join(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
     updates = {"member_join_role_id": role.id}
     cfg = await _update_guild_config(ctx, updates, "member join role")
     if cfg:
         await ctx.respond(f"Set member join role to {role.mention}", ephemeral=True)
 
-@bot.slash_command(name="bot_join_role")
-async def add_role_bot_join(ctx, role: discord.Option(discord.Role, required=True)):
+
+@bot.slash_command(
+    name="bot_join_role",
+    description="Set the role given automatically to new bots."
+)
+async def add_role_bot_join(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
     updates = {"bot_join_role_id": role.id}
     cfg = await _update_guild_config(ctx, updates, "bot join role")
     if cfg:
         await ctx.respond(f"Set bot join role to {role.mention}", ephemeral=True)
 
-@bot.slash_command(name="birthday_msg")
-async def add_text_birthday(ctx, text: discord.Option(str, required=True)):
+
+@bot.slash_command(
+    name="birthday_msg",
+    description="Set the birthday announcement template text."
+)
+async def add_text_birthday(
+    ctx,
+    text: discord.Option(str, required=True),
+):
     updates = {"birthday_text": text}
     cfg = await _update_guild_config(ctx, updates, "birthday text")
     if cfg:
         await ctx.respond("Set birthday text.", ephemeral=True)
 
-@bot.slash_command(name="twitch_msg")
-async def add_text_twitch(ctx, text: discord.Option(str, required=True)):
+
+@bot.slash_command(
+    name="twitch_msg",
+    description="Set the Twitch \"went live\" announcement template."
+)
+async def add_text_twitch(
+    ctx,
+    text: discord.Option(str, required=True),
+):
     updates = {"twitch_live_text": text}
     cfg = await _update_guild_config(ctx, updates, "twitch text")
     if cfg:
         await ctx.respond("Set twitch live text.", ephemeral=True)
 
-@bot.slash_command(name="plague_msg")
-async def add_text_plague(ctx, text: discord.Option(str, required=True)):
+
+@bot.slash_command(
+    name="plague_msg",
+    description="Set the \"plague outbreak\" Dead Chat message."
+)
+async def add_text_plague(
+    ctx,
+    text: discord.Option(str, required=True),
+):
     updates = {"plague_outbreak_text": text}
     cfg = await _update_guild_config(ctx, updates, "plague text")
     if cfg:
         await ctx.respond("Set plague outbreak text.", ephemeral=True)
 
-@bot.slash_command(name="twitch_channel")
-async def add_twitch_notification(ctx, twitch_channel: discord.Option(str, required=True), notification_channel: discord.Option(discord.TextChannel, required=False)):
+
+@bot.slash_command(
+    name="twitch_channel",
+    description="Add a Twitch channel and where its lives are announced."
+)
+async def add_twitch_notification(
+    ctx,
+    twitch_channel: discord.Option(str, "Twitch username", required=True),
+    notification_channel: discord.Option(discord.TextChannel, required=False),
+):
     cfg = await get_guild_config(ctx.guild)
     configs = cfg.get("twitch_configs", [])
     low_name = twitch_channel.lower()
@@ -2239,8 +2438,16 @@ async def add_twitch_notification(ctx, twitch_channel: discord.Option(str, requi
     if new_cfg:
         await ctx.respond(f"Added twitch notification for {twitch_channel} to <#{announce_id}>.", ephemeral=True)
 
-@bot.slash_command(name="prize_add")
-async def add_prize(ctx, title: discord.Option(str, required=True), drop_rate: discord.Option(str, choices=["Common", "Uncommon", "Rare"], required=True)):
+
+@bot.slash_command(
+    name="prize_add",
+    description="Define a prize title and its drop rarity."
+)
+async def add_prize(
+    ctx,
+    title: discord.Option(str, required=True),
+    drop_rate: discord.Option(str, choices=["Common", "Uncommon", "Rare"], required=True),
+):
     cfg = await get_guild_config(ctx.guild)
     defs = cfg.get("prize_defs", {})
     if title in defs:
@@ -2252,15 +2459,29 @@ async def add_prize(ctx, title: discord.Option(str, required=True), drop_rate: d
     if new_cfg:
         await ctx.respond(f"Added prize '{title}' with drop rate {drop_rate}.", ephemeral=True)
 
-@bot.slash_command(name="auto_delete_delay")
-async def set_auto_delete_delay(ctx, seconds: discord.Option(int, required=True)):
+
+@bot.slash_command(
+    name="auto_delete_delay",
+    description="Set how long messages last in auto-delete channels (seconds)."
+)
+async def set_auto_delete_delay(
+    ctx,
+    seconds: discord.Option(int, required=True),
+):
     updates = {"auto_delete_delay_seconds": seconds}
     cfg = await _update_guild_config(ctx, updates, "auto delete delay")
     if cfg:
         await ctx.respond(f"Set auto delete delay to {seconds} seconds.", ephemeral=True)
 
-@bot.slash_command(name="auto_delete_filters")
-async def add_auto_delete_ignore(ctx, phrase: discord.Option(str, required=True)):
+
+@bot.slash_command(
+    name="auto_delete_filters",
+    description="Add a phrase that never gets auto-deleted."
+)
+async def add_auto_delete_ignore(
+    ctx,
+    phrase: discord.Option(str, required=True),
+):
     cfg = await get_guild_config(ctx.guild)
     phrases = cfg.get("auto_delete_ignore_phrases", [])
     if phrase in phrases:
