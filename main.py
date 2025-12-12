@@ -1545,12 +1545,12 @@ async def handle_dead_chat_message(message: discord.Message):
                     pass
 
     if triggered_plague:
-        plague_text = cfg.get("plague_outbreak_text", or DEFAULT_PLAGUE_OUTBREAK_MESSAGE).format(mention=message.author.mention)
+        plague_text = cfg.get("plague_outbreak_text") or DEFAULT_PLAGUE_OUTBREAK_MESSAGE).format(mention=message.author.mention)
         notice = await message.channel.send(plague_text)
         await log_to_guild_bot_channel(guild, f"[PLAGUE] {message.author.mention} infected on {today_str} in {message.channel.mention}.")
     else:
         minutes = DEAD_CHAT_IDLE_SECONDS // 60
-        deadchat_text = cfg.get("deadchat_steal_text", or DEFAULT_DEADCHAT_STEAL_MESSAGE)
+        deadchat_text = cfg.get("deadchat_steal_text") or DEFAULT_DEADCHAT_STEAL_MESSAGE)
         notice_text = deadchat_text.format(mention=message.author.mention, role=role.mention, minutes=minutes)
         notice = await message.channel.send(notice_text)
         await log_to_guild_bot_channel(guild, f"[DEADCHAT] {message.author.mention} stole {role.mention} in {message.channel.mention} after {minutes}+ minutes idle.")
@@ -2033,7 +2033,7 @@ class BasePrizeView(discord.ui.View):
             )
             await ch.send(msg)
         await log_to_guild_bot_channel(guild, f"[PRIZE] {interaction.user.mention} claimed prize '{self.gift_title}' (rarity {self.rarity}).")
-        claim_text = cfg.get("prize_claim_text", or DEFAULT_PRIZE_CLAIM_MESSAGE)
+        claim_text = cfg.get("prize_claim_text") or DEFAULT_PRIZE_CLAIM_MESSAGE)
         await interaction.response.send_message(claim_text.format(gift=self.gift_title), ephemeral=True)
 
 class PrizeView(BasePrizeView):
@@ -2434,7 +2434,7 @@ async def twitch_watcher():
                     await save_twitch_state()
                     for guild in bot.guilds:
                         cfg = await ensure_guild_config(guild)
-                        text = cfg.get("twitch_live_text", or DEFAULT_TWITCH_LIVE_MESSAGE)
+                        text = cfg.get("twitch_live_text") or DEFAULT_TWITCH_LIVE_MESSAGE)
                         for tc in cfg.get("twitch_configs", []):
                             if tc["username"].lower() == name:
                                 ch = guild.get_channel(tc["announce_channel_id"])
@@ -2605,7 +2605,7 @@ async def on_member_update(before, after):
     new_roles = set(after.roles) - set(before.roles)
     for role in new_roles:
         if role.id == birthday_role_id:
-            text = cfg.get("birthday_text", or DEFAULT_BIRTHDAY_TEXT)
+            text = cfg.get("birthday_text") or DEFAULT_BIRTHDAY_TEXT)
             await ch.send(text.replace("{mention}", after.mention))
             await log_to_guild_bot_channel(guild, f"[BIRTHDAY] Birthday role granted and message sent for {after.mention}.")
 
@@ -3577,7 +3577,7 @@ async def prize_announce(
     dead_role_id = cfg.get("dead_chat_role_id", 0)
     dead_role = guild.get_role(dead_role_id)
     role_mention = dead_role.mention if dead_role else "the Dead Chat role"
-    text = cfg.get("prize_announce_text", or DEFAULT_PRIZE_ANNOUNCE_MESSAGE)
+    text = cfg.get("prize_announce_text") or DEFAULT_PRIZE_ANNOUNCE_MESSAGE)
     msg = text.format(
         winner=member.mention,
         gift=prize,
