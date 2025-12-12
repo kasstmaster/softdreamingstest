@@ -1,4 +1,3 @@
-
 # ============================================================
 # RULES FOR CHATGPT AND GROK (DO NOT VIOLATE)
 # • Use ONLY these sections, in this exact order:
@@ -15,46 +14,6 @@
 # • Do NOT add any other sections.
 # • Do NOT add comments inside the code. No inline labels.
 # ============================================================
-# BOT NAME: ADMIN BOT
-# PURPOSE 
-# • System backbone: shared storage messages, state load/save, one-time init commands
-# • Entry/exit flow: welcome text, delayed member role, bot join role, boost + birthday messages
-# • Moderation logging: bans, kicks, leaves routed to staff log thread/bot log channel
-# • Dead Chat engine: idle tracking, role steals, daily reset, cooldowns, state persistence
-# • Plague events: schedule contagious days, infect winners, manage infected role + expiry
-# • Prize system: schedule drops, send claim buttons, announce winners with rarity metadata
-# • Sticky messages: per-channel sticky text + recreation on new messages
-# • Game pings: “Get Notified” button + select menu that manages game notification roles
-# • Twitch watcher: poll Twitch API, track live state, send live notifications
-# • Auto-delete: timed deletion for configured channels while allowing birthday messages
-# ============================================================
-# SERVER: Soft Dreamings (≈25 members, ages 25–40)
-# • Private friend group; movie nights, QOTD, games, light role events
-# • Bots: Admin Bot + Member Bot (this file)
-# • Notable Channels:
-#   - #k • one-letter chat
-#   - #codes • game codes
-#   - #graveyard • Dead Chat role, plague events, monthly prize drops
-#   - #movies • movie pool
-#   - #ratings • post-watch ratings
-#   - #qotd • daily questions
-# ROLE ACCESS
-# OWNER
-# • Permissions: Full
-# • Commands: All
-# ADMINS
-# • Permissions: Full admin/moderation
-# • Commands: All in this file
-# TRUSTED
-# • Permissions: Member + announcements + VC status
-# • Commands:
-#   /birthdays /birthdays_public /media_reload /library_sync
-#   /pool_public /pool_remove /qotd_send /random /set_for /remove_for
-# MEMBER
-# • Permissions: Standard chat + VC + app commands
-# • Commands:
-#   /birthdays /set /color /pick /pool /replace /search 
-# ============================================================
 
 ############### IMPORTS ###############
 import discord
@@ -65,9 +24,13 @@ import json
 import traceback
 import sys
 import asyncpg
+import urllib.request
+import random as pyrandom
+import gspread
 from datetime import datetime, timedelta
 from discord import TextChannel
 from discord.ui import Select
+from google.oauth2.service_account import Credentials
 
 
 ############### CONSTANTS & CONFIG ###############
@@ -77,27 +40,29 @@ intents.message_content = True
 intents.voice_states = True
 
 DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID", "0"))
-bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
-
-ACTIVE_ROLE_ID = int(os.getenv("ACTIVE_ROLE_ID", "0"))
-BIRTHDAY_ROLE_ID = int(os.getenv("BIRTHDAY_ROLE_ID", "0"))
-DEAD_CHAT_ROLE_ID = int(os.getenv("DEAD_CHAT_ROLE_ID", "0"))
-INFECTED_ROLE_ID = int(os.getenv("INFECTED_ROLE_ID", "0"))
-MEMBER_JOIN_ROLE_ID = int(os.getenv("MEMBER_JOIN_ROLE_ID", "0"))
-BOT_JOIN_ROLE_ID = int(os.getenv("BOT_JOIN_ROLE_ID", "0"))
-
-WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID", "0"))
-MOD_LOG_THREAD_ID = int(os.getenv("MOD_LOG_THREAD_ID", "0"))
-STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", "0"))
-BOT_LOG_THREAD_ID = int(os.getenv("BOT_LOG_THREAD_ID", "0"))
-PRIZE_DROP_CHANNEL_ID = int(os.getenv("PRIZE_DROP_CHANNEL_ID", "0"))
-
-AUTO_DELETE_CHANNEL_IDS = [int(x.strip()) for x in os.getenv("AUTO_DELETE_CHANNEL_IDS", "").split(",") if x.strip().isdigit()]
-DEAD_CHAT_CHANNEL_IDS = [int(x.strip()) for x in os.getenv("DEAD_CHAT_CHANNEL_IDS", "").split(",") if x.strip().isdigit()]
+debug_guilds = [DEBUG_GUILD_ID] if DEBUG_GUILD_ID else None
+bot = discord.Bot(intents=intents, debug_guilds=debug_guilds)
 
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
-TWITCH_CHANNELS = [c.strip().lower() for c in os.getenv("TWITCH_CHANNELS", "").split(",") if c.strip()]
+
+GOOGLE_CREDS_RAW = os.getenv("GOOGLE_CREDENTIALS")
+SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+gc = None
+if GOOGLE_CREDS_RAW and SHEET_ID:
+    try:
+        creds_dict = json.loads(GOOGLE_CREDS_RAW)
+        creds = Credentials.from_service_account_info(
+            creds_dict,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        )
+        gc = gspread.authorize(creds)
+        print("QOTD: Google Sheets client initialized.")
+    except Exception as e:
+        print("QOTD init error:", repr(e))
+        traceback.print_exc()
+else:
+    print("QOTD disabled: missing GOOGLE_CREDENTIALS or GOOGLE_SHEET_ID")
 
 DELETE_DELAY_SECONDS = int(os.getenv("DELETE_DELAY_SECONDS", "3600"))
 INACTIVE_DAYS_THRESHOLD = int(os.getenv("INACTIVE_DAYS_THRESHOLD", "14"))
@@ -109,127 +74,544 @@ PRIZE_EMOJI = "🎁"
 IGNORE_MEMBER_IDS = {int(x.strip()) for x in os.getenv("IGNORE_MEMBER_IDS", "").split(",") if x.strip().isdigit()}
 MONTH_CHOICES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 MONTH_TO_NUM = {name: i for i, name in enumerate(MONTH_CHOICES, start=1)}
-PRIZE_DEFS = {"Movie Request": "Common", "Month of Nitro Basic": "Uncommon", "Steam Gift Card": "Rare"}
 
-BIRTHDAY_TEXT = "<a:pepebirthday:1296553298895310971> It's {mention}'s birthday!\n-# Add your own </set:1440919374310408234> — @everyone"
-TWITCH_LIVE_MESSAGE = "{name} is live on Twitch ┃ https://twitch.tv/{name}\n-# @everyone"
-DEADCHAT_STEAL_MESSAGE = "{mention} has stolen the {role} role after {minutes}+ minutes of silence.\n-# There's a random chance to win prizes with this role.\n-# [Learn More](https://discord.com/channels/1205041211610501120/1447330327923265586)"
-PLAGUE_OUTBREAK_MESSAGE = "**PLAGUE OUTBREAK**\n-# The sickness has chosen its host.\n-# {mention} bears the infection, binding the plague and ending today’s contagion.\n-# Those who claim Dead Chat after this moment will not be touched by the disease.\n-# [Learn More](https://discord.com/channels/1205041211610501120/1447330327923265586)"
-PRIZE_ANNOUNCE_MESSAGE = "{winner} has won a **{gift}** with {role}!\n-# Drop Rate: {rarity}"
-PRIZE_CLAIM_MESSAGE = "You claimed a **{gift}**!"
+DEFAULT_BIRTHDAY_TEXT = "<a:pepebirthday:1296553298895310971> It's {mention}'s birthday!\n-# Add your own </set:1440919374310408234> — @everyone"
+DEFAULT_TWITCH_LIVE_MESSAGE = "{name} is live on Twitch ┃ https://twitch.tv/{name}\n-# @everyone"
+DEFAULT_DEADCHAT_STEAL_MESSAGE = "{mention} has stolen the {role} role after {minutes}+ minutes of silence.\n-# There's a random chance to win prizes with this role.\n-# [Learn More](https://discord.com/channels/1205041211610501120/1447330327923265586)"
+DEFAULT_PLAGUE_OUTBREAK_MESSAGE = "**PLAGUE OUTBREAK**\n-# The sickness has chosen its host.\n-# {mention} bears the infection, binding the plague and ending today’s contagion.\n-# Those who claim Dead Chat after this moment will not be touched by the disease.\n-# [Learn More](https://discord.com/channels/1205041211610501120/1447330327923265586)"
+DEFAULT_PRIZE_ANNOUNCE_MESSAGE = "{winner} has won a **{gift}** with {role}!\n-# Drop Rate: {rarity}"
+DEFAULT_PRIZE_CLAIM_MESSAGE = "You claimed a **{gift}**!"
+DEFAULT_AUTO_DELETE_IGNORE_PHRASES = []
+
 GAME_NOTIF_OPEN_TEXT = "Choose the game notifications you want:"
 GAME_NOTIF_NO_CHANGES = "No changes."
 GAME_NOTIF_ADDED_PREFIX = "Added: "
 GAME_NOTIF_REMOVED_PREFIX = "Removed: "
 
+ICON_DEFAULT_URL = os.getenv("ICON_DEFAULT_URL", "")
+ICON_CHRISTMAS_URL = os.getenv("ICON_CHRISTMAS_URL", "")
+ICON_HALLOWEEN_URL = os.getenv("ICON_HALLOWEEN_URL", "")
+
+THEME_CHRISTMAS_ROLES = {
+    "Sandy Claws": "Admin",
+    "Grinch": "Original Member",
+    "Cranberry": "Member",
+    "Christmas": "Bots",
+}
+
+THEME_HALLOWEEN_ROLES = {
+    "Cauldron": "Admin",
+    "Candy": "Original Member",
+    "Witchy": "Member",
+    "Halloween": "Bots",
+}
+
+THEME_CHRISTMAS_EMOJIS_RAW = os.getenv("THEME_CHRISTMAS_EMOJIS", "[]")
+THEME_HALLOWEEN_EMOJIS_RAW = os.getenv("THEME_HALLOWEEN_EMOJIS", "[]")
+
+try:
+    THEME_EMOJI_CONFIG = {
+        "christmas": json.loads(THEME_CHRISTMAS_EMOJIS_RAW) if THEME_CHRISTMAS_EMOJIS_RAW else [],
+        "halloween": json.loads(THEME_HALLOWEEN_EMOJIS_RAW) if THEME_HALLOWEEN_EMOJIS_RAW else [],
+    }
+except Exception:
+    THEME_EMOJI_CONFIG = {
+        "christmas": [],
+        "halloween": [],
+    }
 
 ############### GLOBAL STATE / STORAGE ###############
 guild_configs: dict[int, dict] = {}
-guild_config_storage_message_id: int | None = None
 db_pool: asyncpg.Pool | None = None
+
+activity_dirty = False
+deadchat_dirty = False
+sticky_dirty = False
 
 twitch_access_token: str | None = None
 twitch_live_state: dict[str, bool] = {}
-twitch_state_storage_message_id: int | None = None
+all_twitch_channels: set[str] = set()
 
-last_activity_storage_message_id: int | None = None
-last_activity: dict[int, str] = {}
+last_activity: dict[int, dict[int, str]] = {}
 
-dead_current_holder_id: int | None = None
+dead_current_holders: dict[int, int | None] = {}
 dead_last_notice_message_ids: dict[int, int | None] = {}
 dead_last_win_time: dict[int, datetime] = {}
 deadchat_last_times: dict[int, str] = {}
-deadchat_storage_message_id: int | None = None
-deadchat_state_storage_message_id: int | None = None
-movie_prize_storage_message_id: int | None = None
-nitro_prize_storage_message_id: int | None = None
-steam_prize_storage_message_id: int | None = None
-movie_scheduled_prizes: list[dict] = []
-nitro_scheduled_prizes: list[dict] = []
-steam_scheduled_prizes: list[dict] = []
 
 sticky_messages: dict[int, int] = {}
 sticky_texts: dict[int, str] = {}
-sticky_storage_message_id: int | None = None
 
 pending_member_joins: list[dict] = []
-member_join_storage_message_id: int | None = None
 
-plague_scheduled: list[dict] = []
-plague_storage_message_id: int | None = None
-infected_members: dict[int, str] = {}
+plague_scheduled: dict[int, list[dict]] = {}
+infected_members: dict[int, dict[int, str]] = {}
 
-startup_logging_done: bool = False
-startup_log_buffer: list[str] = []
+prize_defs: dict[int, dict[str, str]] = {}
+scheduled_prizes: dict[int, list[dict]] = {}
 
 
 ############### HELPER FUNCTIONS ###############
 async def init_db():
     global db_pool
+
+    # Prevent re-init
     if db_pool is not None:
         return
+
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         await log_to_bot_channel("@everyone DATABASE_URL is not set. Postgres not initialized.")
         return
+
     db_pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5)
+
     async with db_pool.acquire() as conn:
+        # --- Create tables ---
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS guild_configs (
             guild_id BIGINT PRIMARY KEY,
-            welcome_channel_id BIGINT,
-            birthday_role_id BIGINT,
-            member_join_role_id BIGINT,
-            bot_join_role_id BIGINT,
-            dead_chat_role_id BIGINT,
-            infected_role_id BIGINT,
-            active_role_id BIGINT,
-            dead_chat_channel_ids TEXT,
-            auto_delete_channel_ids TEXT,
-            mod_log_channel_id BIGINT,
-            bot_log_channel_id BIGINT,
-            prize_drop_channel_id BIGINT
+            welcome_channel_id BIGINT DEFAULT 0,
+            birthday_role_id BIGINT DEFAULT 0,
+            member_join_role_id BIGINT DEFAULT 0,
+            bot_join_role_id BIGINT DEFAULT 0,
+            dead_chat_role_id BIGINT DEFAULT 0,
+            infected_role_id BIGINT DEFAULT 0,
+            active_role_id BIGINT DEFAULT 0,
+            dead_chat_channel_ids TEXT DEFAULT '[]',
+            auto_delete_channel_ids TEXT DEFAULT '[]',
+            mod_log_channel_id BIGINT DEFAULT 0,
+            bot_log_channel_id BIGINT DEFAULT 0,
+            prize_drop_channel_id BIGINT DEFAULT 0,
+            birthday_announce_channel_id BIGINT DEFAULT 0,
+            twitch_announce_channel_id BIGINT DEFAULT 0,
+            prize_announce_channel_id BIGINT DEFAULT 0,
+            auto_delete_delay_seconds INTEGER DEFAULT 0,
+            auto_delete_ignore_phrases TEXT DEFAULT '[]',
+            twitch_configs TEXT DEFAULT '[]',
+            prize_defs TEXT DEFAULT '{}',
+            prize_scheduled TEXT DEFAULT '[]',
+            plague_scheduled TEXT DEFAULT '[]',
+            infected_members TEXT DEFAULT '{}',
+            birthday_text TEXT,
+            twitch_live_text TEXT,
+            plague_outbreak_text TEXT,
+            deadchat_steal_text TEXT,
+            prize_announce_text TEXT,
+            prize_claim_text TEXT
         );
         """)
 
-async def init_guild_config_storage():
-    global guild_config_storage_message_id, guild_configs
-    msg = await find_storage_message("CONFIG_DATA:")
-    if not msg:
-        return
-    guild_config_storage_message_id = msg.id
-    raw = msg.content[len("CONFIG_DATA:"):]
-    if not raw.strip():
-        guild_configs = {}
-        return
-    try:
-        data = json.loads(raw)
-        guild_configs = {int(gid): cfg for gid, cfg in data.items()}
-        await log_to_bot_channel(f"[CONFIG] Loaded config for {len(guild_configs)} guild(s).")
-    except Exception as e:
-        guild_configs = {}
-        await log_to_bot_channel(f"init_guild_config_storage failed: {e}")
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS sticky_data (
+            channel_id BIGINT PRIMARY KEY,
+            text TEXT,
+            message_id BIGINT
+        );
+        """)
 
-async def save_guild_config_storage():
-    if STORAGE_CHANNEL_ID == 0 or guild_config_storage_message_id is None:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS qotd_settings (
+            guild_id BIGINT PRIMARY KEY,
+            channel_id BIGINT DEFAULT 0,
+            enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            ping_role_id BIGINT DEFAULT 0
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS theme_settings (
+            guild_id BIGINT PRIMARY KEY,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            mode TEXT NOT NULL DEFAULT 'auto'
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS vc_role_links (
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            role_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, channel_id)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS birthdays (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            mm_dd TEXT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS birthday_public_messages (
+            guild_id BIGINT PRIMARY KEY,
+            channel_id BIGINT NOT NULL,
+            message_id BIGINT NOT NULL
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS deadchat_last_times (
+            channel_id BIGINT PRIMARY KEY,
+            last_time TIMESTAMPTZ NOT NULL
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS deadchat_state (
+            guild_id BIGINT PRIMARY KEY,
+            current_holders JSONB DEFAULT '{}'::jsonb,
+            last_win_times JSONB DEFAULT '{}'::jsonb,
+            notice_msg_ids JSONB DEFAULT '{}'::jsonb
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS twitch_state (
+            username TEXT PRIMARY KEY,
+            is_live BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS last_activity (
+            guild_id BIGINT NOT NULL,
+            member_id BIGINT NOT NULL,
+            last_seen TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (guild_id, member_id)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS member_join_queue (
+            guild_id BIGINT NOT NULL,
+            member_id BIGINT NOT NULL,
+            assign_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (guild_id, member_id)
+        );
+        """)
+
+        # --- Add columns safely (idempotent) ---
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS birthday_announce_channel_id BIGINT DEFAULT 0;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS twitch_announce_channel_id BIGINT DEFAULT 0;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS prize_announce_channel_id BIGINT DEFAULT 0;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT DEFAULT 0;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS mod_log_channel_id BIGINT DEFAULT 0;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS bot_log_channel_id BIGINT DEFAULT 0;")
+
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS prize_claim_text TEXT;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS prize_announce_text TEXT;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS deadchat_steal_text TEXT;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS plague_outbreak_text TEXT;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS twitch_live_text TEXT;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS birthday_text TEXT;")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS infected_members TEXT DEFAULT '{}';")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS plague_scheduled TEXT DEFAULT '[]';")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS prize_scheduled TEXT DEFAULT '[]';")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS prize_defs TEXT DEFAULT '{}';")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS twitch_configs TEXT DEFAULT '[]';")
+        await conn.execute("ALTER TABLE guild_configs ADD COLUMN IF NOT EXISTS auto_delete_ignore_phrases TEXT DEFAULT '[]';")
+
+        await conn.execute("ALTER TABLE qotd_settings ADD COLUMN IF NOT EXISTS ping_role_id BIGINT DEFAULT 0;")
+
+        # --- CRITICAL: ensure PKs exist for ON CONFLICT to work ---
+        await conn.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='qotd_settings'::regclass AND contype='p') THEN
+                ALTER TABLE qotd_settings ADD CONSTRAINT qotd_settings_pkey PRIMARY KEY (guild_id);
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='guild_configs'::regclass AND contype='p') THEN
+                ALTER TABLE guild_configs ADD CONSTRAINT guild_configs_pkey PRIMARY KEY (guild_id);
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='birthdays'::regclass AND contype='p') THEN
+                ALTER TABLE birthdays ADD CONSTRAINT birthdays_pkey PRIMARY KEY (guild_id, user_id);
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='vc_role_links'::regclass AND contype='p') THEN
+                ALTER TABLE vc_role_links ADD CONSTRAINT vc_role_links_pkey PRIMARY KEY (guild_id, channel_id);
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='theme_settings'::regclass AND contype='p') THEN
+                ALTER TABLE theme_settings ADD CONSTRAINT theme_settings_pkey PRIMARY KEY (guild_id);
+            END IF;
+        END$$;
+        """)
+
+    await log_to_bot_channel("✅ Postgres initialized (tables/columns/constraints ensured).")
+
+async def run_migrations(conn):
+    await conn.execute("""
+    DO $$
+    BEGIN
+        -- qotd_settings
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'qotd_settings_pkey'
+        ) THEN
+            ALTER TABLE qotd_settings
+            ADD CONSTRAINT qotd_settings_pkey PRIMARY KEY (guild_id);
+        END IF;
+
+        -- guild_configs
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'guild_configs_pkey'
+        ) THEN
+            ALTER TABLE guild_configs
+            ADD CONSTRAINT guild_configs_pkey PRIMARY KEY (guild_id);
+        END IF;
+
+        -- birthdays
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'birthdays_pkey'
+        ) THEN
+            ALTER TABLE birthdays
+            ADD CONSTRAINT birthdays_pkey PRIMARY KEY (guild_id, user_id);
+        END IF;
+
+        -- vc_role_links
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'vc_role_links_pkey'
+        ) THEN
+            ALTER TABLE vc_role_links
+            ADD CONSTRAINT vc_role_links_pkey PRIMARY KEY (guild_id, channel_id);
+        END IF;
+    END$$;
+    """)
+
+
+async def ensure_guild_configs_schema():
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS welcome_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS birthday_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS member_join_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS bot_join_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS dead_chat_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS infected_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS active_role_id BIGINT DEFAULT 0;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS dead_chat_channel_ids TEXT DEFAULT '[]';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS auto_delete_channel_ids TEXT DEFAULT '[]';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS mod_log_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS bot_log_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS birthday_announce_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS twitch_announce_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_announce_channel_id BIGINT DEFAULT 0;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS auto_delete_delay_seconds INTEGER DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS auto_delete_ignore_phrases TEXT DEFAULT '[]';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS twitch_configs TEXT DEFAULT '[]';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_defs TEXT DEFAULT '{}';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_scheduled TEXT DEFAULT '[]';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS plague_scheduled TEXT DEFAULT '[]';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS infected_members TEXT DEFAULT '{}';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS birthday_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS twitch_live_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS plague_outbreak_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS deadchat_steal_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_announce_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_claim_text TEXT;
+        """)
+
+async def get_theme_settings(guild_id: int) -> dict:
+    """
+    Returns theme settings for a guild:
+    { 'enabled': bool, 'mode': 'auto'|'none'|'halloween'|'christmas' }
+    Defaults: enabled=True, mode='auto'
+    """
+    if db_pool is None:
+        return {"enabled": True, "mode": "auto"}
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT enabled, mode FROM theme_settings WHERE guild_id = $1",
+            guild_id,
+        )
+
+    if row is None:
+        return {"enabled": True, "mode": "auto"}
+
+    return {
+        "enabled": bool(row["enabled"]),
+        "mode": (row["mode"] or "auto"),
+    }
+
+
+async def set_theme_enabled(guild_id: int, enabled: bool):
+    if db_pool is None:
         return
-    payload = {str(gid): cfg for gid, cfg in guild_configs.items()}
-    try:
-        msg = await ch.fetch_message(guild_config_storage_message_id)
-        await msg.edit(content="CONFIG_DATA:" + json.dumps(payload))
-    except Exception as e:
-        await log_to_bot_channel(f"save_guild_config_storage failed: {e}")
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO theme_settings (guild_id, enabled, mode)
+            VALUES ($1, $2, 'auto')
+            ON CONFLICT (guild_id)
+            DO UPDATE SET enabled = EXCLUDED.enabled;
+            """,
+            guild_id,
+            enabled,
+        )
+
+
+async def set_theme_mode(guild_id: int, mode: str):
+    """
+    mode must be one of: 'auto', 'none', 'halloween', 'christmas'
+    """
+    if db_pool is None:
+        return
+    if mode not in ("auto", "none", "halloween", "christmas"):
+        return
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO theme_settings (guild_id, enabled, mode)
+            VALUES ($1, TRUE, $2)
+            ON CONFLICT (guild_id)
+            DO UPDATE SET mode = EXCLUDED.mode;
+            """,
+            guild_id,
+            mode,
+        )
+
+async def deadchat_flush_watcher():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            global deadchat_dirty
+            if deadchat_dirty:
+                deadchat_dirty = False
+                await save_deadchat_storage()
+        except Exception as e:
+            await log_exception("deadchat_flush_watcher", e)
+        await asyncio.sleep(30)
+
+async def activity_flush_watcher():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            global activity_dirty
+            if activity_dirty:
+                activity_dirty = False
+                await save_last_activity_storage()
+        except Exception as e:
+            await log_exception("activity_flush_watcher", e)
+        await asyncio.sleep(60)
 
 async def save_guild_config_db(guild: discord.Guild, cfg: dict):
     if db_pool is None:
         return
+    await ensure_guild_configs_schema()
     dead_chat_ids = cfg.get("dead_chat_channel_ids") or []
     auto_delete_ids = cfg.get("auto_delete_channel_ids") or []
     dead_chat_json = json.dumps([int(x) for x in dead_chat_ids])
     auto_delete_json = json.dumps([int(x) for x in auto_delete_ids])
+    auto_delete_delay = cfg.get("auto_delete_delay_seconds")
+    auto_delete_ignore_json = json.dumps(cfg.get("auto_delete_ignore_phrases", []))
+    twitch_configs_json = json.dumps(cfg.get("twitch_configs", []))
+    prize_defs_json = json.dumps(cfg.get("prize_defs", {}))
+    prize_scheduled_json = json.dumps(cfg.get("prize_scheduled", []))
+    plague_scheduled_json = json.dumps(cfg.get("plague_scheduled", []))
+    infected_members_json = json.dumps({str(k): v for k, v in cfg.get("infected_members", {}).items()})
+    birthday_text = cfg.get("birthday_text")
+    twitch_live_text = cfg.get("twitch_live_text")
+    plague_outbreak_text = cfg.get("plague_outbreak_text")
+    deadchat_steal_text = cfg.get("deadchat_steal_text")
+    prize_announce_text = cfg.get("prize_announce_text")
+    prize_claim_text = cfg.get("prize_claim_text")
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
@@ -246,9 +628,25 @@ async def save_guild_config_db(guild: discord.Guild, cfg: dict):
                 auto_delete_channel_ids,
                 mod_log_channel_id,
                 bot_log_channel_id,
-                prize_drop_channel_id
+                prize_drop_channel_id,
+                birthday_announce_channel_id,
+                twitch_announce_channel_id,
+                prize_announce_channel_id,
+                auto_delete_delay_seconds,
+                auto_delete_ignore_phrases,
+                twitch_configs,
+                prize_defs,
+                prize_scheduled,
+                plague_scheduled,
+                infected_members,
+                birthday_text,
+                twitch_live_text,
+                plague_outbreak_text,
+                deadchat_steal_text,
+                prize_announce_text,
+                prize_claim_text
             ) VALUES (
-                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
             )
             ON CONFLICT (guild_id) DO UPDATE SET
                 welcome_channel_id = EXCLUDED.welcome_channel_id,
@@ -262,7 +660,23 @@ async def save_guild_config_db(guild: discord.Guild, cfg: dict):
                 auto_delete_channel_ids = EXCLUDED.auto_delete_channel_ids,
                 mod_log_channel_id = EXCLUDED.mod_log_channel_id,
                 bot_log_channel_id = EXCLUDED.bot_log_channel_id,
-                prize_drop_channel_id = EXCLUDED.prize_drop_channel_id
+                prize_drop_channel_id = EXCLUDED.prize_drop_channel_id,
+                birthday_announce_channel_id = EXCLUDED.birthday_announce_channel_id,
+                twitch_announce_channel_id = EXCLUDED.twitch_announce_channel_id,
+                prize_announce_channel_id = EXCLUDED.prize_announce_channel_id,
+                auto_delete_delay_seconds = EXCLUDED.auto_delete_delay_seconds,
+                auto_delete_ignore_phrases = EXCLUDED.auto_delete_ignore_phrases,
+                twitch_configs = EXCLUDED.twitch_configs,
+                prize_defs = EXCLUDED.prize_defs,
+                prize_scheduled = EXCLUDED.prize_scheduled,
+                plague_scheduled = EXCLUDED.plague_scheduled,
+                infected_members = EXCLUDED.infected_members,
+                birthday_text = EXCLUDED.birthday_text,
+                twitch_live_text = EXCLUDED.twitch_live_text,
+                plague_outbreak_text = EXCLUDED.plague_outbreak_text,
+                deadchat_steal_text = EXCLUDED.deadchat_steal_text,
+                prize_announce_text = EXCLUDED.prize_announce_text,
+                prize_claim_text = EXCLUDED.prize_claim_text
             """,
             guild.id,
             cfg.get("welcome_channel_id"),
@@ -277,16 +691,36 @@ async def save_guild_config_db(guild: discord.Guild, cfg: dict):
             cfg.get("mod_log_channel_id"),
             cfg.get("bot_log_channel_id"),
             cfg.get("prize_drop_channel_id"),
+            cfg.get("birthday_announce_channel_id"),
+            cfg.get("twitch_announce_channel_id"),
+            cfg.get("prize_announce_channel_id"),
+            auto_delete_delay,
+            auto_delete_ignore_json,
+            twitch_configs_json,
+            prize_defs_json,
+            prize_scheduled_json,
+            plague_scheduled_json,
+            infected_members_json,
+            birthday_text,
+            twitch_live_text,
+            plague_outbreak_text,
+            deadchat_steal_text,
+            prize_announce_text,
+            prize_claim_text
         )
 
-async def get_guild_config(guild: discord.Guild) -> dict | None:
+async def get_guild_config(guild: discord.Guild) -> dict:
     if not guild or db_pool is None:
-        return None
+        return {}
+
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM guild_configs WHERE guild_id = $1", guild.id)
+
     if not row:
-        return None
+        return {}
+
     data = dict(row)
+
     if data.get("dead_chat_channel_ids"):
         try:
             data["dead_chat_channel_ids"] = [int(x) for x in json.loads(data["dead_chat_channel_ids"])]
@@ -294,6 +728,7 @@ async def get_guild_config(guild: discord.Guild) -> dict | None:
             data["dead_chat_channel_ids"] = []
     else:
         data["dead_chat_channel_ids"] = []
+
     if data.get("auto_delete_channel_ids"):
         try:
             data["auto_delete_channel_ids"] = [int(x) for x in json.loads(data["auto_delete_channel_ids"])]
@@ -301,40 +736,39 @@ async def get_guild_config(guild: discord.Guild) -> dict | None:
             data["auto_delete_channel_ids"] = []
     else:
         data["auto_delete_channel_ids"] = []
+
+    data["auto_delete_ignore_phrases"] = json.loads(data.get("auto_delete_ignore_phrases") or "[]")
+    data["twitch_configs"] = json.loads(data.get("twitch_configs") or "[]")
+    data["prize_defs"] = json.loads(data.get("prize_defs") or "{}")
+    data["prize_scheduled"] = json.loads(data.get("prize_scheduled") or "[]")
+    data["plague_scheduled"] = json.loads(data.get("plague_scheduled") or "[]")
+    data["infected_members"] = {int(k): v for k, v in json.loads(data.get("infected_members") or "{}").items()}
     return data
 
 async def ensure_guild_config(guild: discord.Guild) -> dict:
-    if db_pool is None:
+    if db_pool is None or guild is None:
         return {}
+
     cfg = await get_guild_config(guild)
-    if cfg is not None:
+
+    async with db_pool.acquire() as conn:
+        exists = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM guild_configs WHERE guild_id=$1)", guild.id
+        )
+
+    if exists:
         return cfg
+
     async with db_pool.acquire() as conn:
         await conn.execute(
-            """
-            INSERT INTO guild_configs (guild_id)
-            VALUES ($1)
-            ON CONFLICT (guild_id) DO NOTHING
-            """,
-            guild.id,
+            "INSERT INTO guild_configs (guild_id) VALUES ($1) ON CONFLICT DO NOTHING",
+            guild.id
         )
-    cfg = await get_guild_config(guild)
-    return cfg or {}
 
-async def get_config_channel(guild: discord.Guild, key: str) -> TextChannel | None:
-    cfg = await get_guild_config(guild)
-    if not cfg:
-        return None
-    cid = cfg.get(key)
-    if not cid:
-        return None
-    ch = guild.get_channel(cid)
-    if isinstance(ch, TextChannel):
-        return ch
-    return None
+    return await get_guild_config(guild)
 
 async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None:
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     if not cfg:
         return None
     rid = cfg.get(key)
@@ -342,112 +776,41 @@ async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None
         return None
     return guild.get_role(rid)
 
-async def debug_scan_storage_channel(limit: int = 20) -> str:
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return "Storage channel not found."
-    lines = []
-    async for msg in ch.history(limit=limit, oldest_first=True):
-        prefix = msg.content[:40].replace("\n", "\\n")
-        lines.append(f"id={msg.id} author={msg.author.id} bot={msg.author.bot} content={prefix}")
-    if not lines:
-        return "No messages visible in storage channel."
-    return "\n".join(lines)
 
-async def log_to_thread(content: str):
-    channel = bot.get_channel(MOD_LOG_THREAD_ID)
-    if not channel:
-        return
-    try:
-        await channel.send(content)
-    except Exception:
-        pass
+async def get_config_channel(guild: discord.Guild, key: str) -> discord.TextChannel | None:
+    cfg = await ensure_guild_config(guild)
+    if not cfg:
+        return None
+
+    channel_id = cfg.get(key)
+    if not channel_id:
+        return None
+
+    channel = guild.get_channel(channel_id)
+    if isinstance(channel, discord.TextChannel):
+        return channel
+    return None
+
+async def log_to_guild_mod_log(guild: discord.Guild, content: str):
+    """Log moderation-related info to Railway logs only."""
+    gid = guild.id if guild else "?"
+    print(f"[MOD-LOG][GUILD {gid}] {content}")
+
+
+async def log_to_guild_bot_channel(guild: discord.Guild, content: str):
+    """Log bot-related info to Railway logs only."""
+    gid = guild.id if guild else "?"
+    print(f"[BOT-LOG][GUILD {gid}] {content}")
+
 
 async def log_to_bot_channel(content: str):
-    if not startup_logging_done:
-        startup_log_buffer.append(content)
-        return
-    if BOT_LOG_THREAD_ID == 0:
-        return await log_to_thread(f"[BOT] {content}")
-    channel = bot.get_channel(BOT_LOG_THREAD_ID)
-    if not channel:
-        return
-    try:
-        await channel.send(content)
-    except Exception:
-        pass
-
-async def flush_startup_logs():
-    if not startup_log_buffer:
-        return
-    if BOT_LOG_THREAD_ID != 0:
-        channel = bot.get_channel(BOT_LOG_THREAD_ID)
-    else:
-        channel = bot.get_channel(MOD_LOG_THREAD_ID) if MOD_LOG_THREAD_ID != 0 else None
-    if not channel:
-        return
-    early = []
-    watcher_lines = []
-    startup_summaries = []
-    ready_lines = []
-    activity_loaded_lines = []
-    report_entry = None
-    for entry in startup_log_buffer:
-        if "[STORAGE]" in entry and "[RUNTIME CONFIG]" in entry:
-            report_entry = entry
-        elif entry.startswith("[TWITCH] watcher started") or entry.startswith("[PLAGUE] infected_watcher started") or entry.startswith("[MEMBERJOIN] watcher started") or entry.startswith("[ACTIVITY] activity_inactive_watcher started"):
-            watcher_lines.append(entry)
-        elif entry.startswith("[STARTUP] "):
-            startup_summaries.append(entry)
-        elif entry.startswith("[ACTIVITY] Loaded last activity"):
-            activity_loaded_lines.append(entry)
-        elif entry.startswith("Bot ready as "):
-            ready_lines.append(entry)
-        else:
-            early.append(entry)
-    parts = ["---------------------------- STARTUP LOGS ----------------------------",
-    ""]
-    parts.extend(early)
-    basic_line = None
-    if report_entry:
-        lines = report_entry.split("\n")
-        trimmed = [l.rstrip() for l in lines]
-        idx = len(trimmed) - 1
-        while idx >= 0 and trimmed[idx] == "":
-            idx -= 1
-        if idx >= 0 and trimmed[idx] == "All systems passed basic storage and runtime checks.":
-            basic_line = trimmed[idx]
-            trimmed = trimmed[:idx]
-            while trimmed and trimmed[-1] == "":
-                trimmed.pop()
-        if trimmed:
-            parts.extend(trimmed)
-    if watcher_lines:
-        parts.append("")
-        parts.extend(watcher_lines)
-    tail_present = startup_summaries or activity_loaded_lines or basic_line or ready_lines
-    if tail_present:
-        parts.append("")
-        parts.extend(startup_summaries)
-        parts.extend(activity_loaded_lines)
-        if basic_line or ready_lines:
-            parts.append("")
-        if basic_line:
-            parts.append(basic_line)
-        parts.extend(ready_lines)
-    text = "\n".join(parts)
-    text = "@everyone\n" + text
-    if len(text) > 1900:
-        text = text[:1900]
-    await channel.send(text)
+    """Global logs to Railway only."""
+    print(f"[BOT-LOG][GLOBAL] {content}")
 
 async def log_exception(tag: str, exc: Exception):
+    """Log exceptions to Railway logs only."""
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    text = f"{tag}: {exc}\n{tb}"
-    text = "@everyone " + text
-    if len(text) > 1900:
-        text = text[:1900]
-    await log_to_bot_channel(text)
+    print(f"[EXCEPTION] {tag}: {exc}\n{tb}")
 
 async def check_runtime_systems():
     problems = []
@@ -458,9 +821,7 @@ async def check_runtime_systems():
         "DEAD_CHAT_CHANNELS": True,
         "TWITCH_CONFIG": True,
     }
-    main_guild = bot.get_guild(DEBUG_GUILD_ID)
-    if main_guild is None and bot.guilds:
-        main_guild = bot.guilds[0]
+    main_guild = bot.get_guild(DEBUG_GUILD_ID) or bot.guilds[0] if bot.guilds else None
     if main_guild is None:
         problems.append("Runtime: no guild found for checks")
         results["CHANNELS"] = False
@@ -472,6 +833,7 @@ async def check_runtime_systems():
         results["CHANNELS"] = False
         results["ROLES"] = False
         return problems, results
+    cfg = await get_guild_config(main_guild)
     def fail(key: str, message: str):
         problems.append(message)
         if key in results:
@@ -490,20 +852,19 @@ async def check_runtime_systems():
             fail(key, f"{label}: missing Read Message History")
         if need_manage and not perms.manage_messages:
             fail(key, f"{label}: missing Manage Messages")
-    check_channel_permissions(STORAGE_CHANNEL_ID, "STORAGE_CHANNEL", "CHANNELS", need_manage=True)
-    check_channel_permissions(WELCOME_CHANNEL_ID, "WELCOME_CHANNEL", "CHANNELS")
-    check_channel_permissions(BOT_LOG_THREAD_ID, "BOT_LOG_CHANNEL", "CHANNELS")
-    check_channel_permissions(WELCOME_CHANNEL_ID, "TWITCH_ANNOUNCE_CHANNEL", "CHANNELS")
-    for cid in DEAD_CHAT_CHANNEL_IDS:
+    check_channel_permissions(cfg.get("welcome_channel_id", 0), "WELCOME_CHANNEL", "CHANNELS")
+    check_channel_permissions(cfg.get("bot_log_channel_id", 0), "BOT_LOG_CHANNEL", "CHANNELS")
+    check_channel_permissions(cfg.get("twitch_announce_channel_id", 0), "TWITCH_ANNOUNCE_CHANNEL", "CHANNELS")
+    for cid in cfg.get("dead_chat_channel_ids", []):
         check_channel_permissions(cid, f"DEAD_CHAT_CHANNEL_{cid}", "DEAD_CHAT_CHANNELS", need_manage=True)
-    for cid in AUTO_DELETE_CHANNEL_IDS:
+    for cid in cfg.get("auto_delete_channel_ids", []):
         check_channel_permissions(cid, f"AUTO_DELETE_CHANNEL_{cid}", "AUTO_DELETE", need_manage=True)
     roles_to_check = [
-        (BIRTHDAY_ROLE_ID, "BIRTHDAY_ROLE_ID"),
-        (MEMBER_JOIN_ROLE_ID, "MEMBER_JOIN_ROLE_ID"),
-        (BOT_JOIN_ROLE_ID, "BOT_JOIN_ROLE_ID"),
-        (DEAD_CHAT_ROLE_ID, "DEAD_CHAT_ROLE_ID"),
-        (INFECTED_ROLE_ID, "INFECTED_ROLE_ID"),
+        (cfg.get("birthday_role_id", 0), "BIRTHDAY_ROLE_ID"),
+        (cfg.get("member_join_role_id", 0), "MEMBER_JOIN_ROLE_ID"),
+        (cfg.get("bot_join_role_id", 0), "BOT_JOIN_ROLE_ID"),
+        (cfg.get("dead_chat_role_id", 0), "DEAD_CHAT_ROLE_ID"),
+        (cfg.get("infected_role_id", 0), "INFECTED_ROLE_ID"),
     ]
     for role_id, label in roles_to_check:
         if role_id == 0:
@@ -511,94 +872,65 @@ async def check_runtime_systems():
         role = main_guild.get_role(role_id)
         if role is None:
             fail("ROLES", f"{label}: role {role_id} not found in main guild")
-    if TWITCH_CHANNELS and (not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET or WELCOME_CHANNEL_ID == 0):
-        fail("TWITCH_CONFIG", "TWITCH_CONFIG: missing client id/secret or announce channel")
+    if TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET:
+        results["TWITCH_CONFIG"] = True
+    else:
+        fail("TWITCH_CONFIG", "TWITCH_CONFIG: missing client id/secret")
     return problems, results
 
 async def run_all_inits_with_logging():
     problems = []
     storage = {
         "STICKY": True,
-        "PRIZE": True,
         "DEADCHAT": True,
         "DEADCHAT_STATE": True,
         "TWITCH_STATE": True,
-        "PLAGUE": True,
         "MEMBERJOIN": True,
-        "CONFIG": True,
+        "ACTIVITY": True,
     }
-    try:
-        await init_guild_config_storage()
-        if guild_config_storage_message_id is None:
-            storage["CONFIG"] = False
-            problems.append("CONFIG_DATA storage missing; run /config_init to create it.")
-    except Exception as e:
-        storage["CONFIG"] = False
-        problems.append("init_guild_config_storage failed; guild configs could not be loaded.")
-        await log_exception("init_guild_config_storage", e)
+
     try:
         await init_sticky_storage()
-        if sticky_storage_message_id is None:
-            storage["STICKY"] = False
-            problems.append("STICKY_DATA storage missing; run /sticky_init to create it.")
     except Exception as e:
         storage["STICKY"] = False
-        problems.append("init_sticky_storage failed; sticky messages could not be loaded.")
+        problems.append("init_sticky_storage failed; sticky messages could not be loaded from Postgres.")
         await log_exception("init_sticky_storage", e)
-    try:
-        await init_prize_storage()
-        if movie_prize_storage_message_id is None or nitro_prize_storage_message_id is None or steam_prize_storage_message_id is None:
-            storage["PRIZE"] = False
-            problems.append("One or more PRIZE_* storage messages are missing; run /prize_init to create them.")
-    except Exception as e:
-        storage["PRIZE"] = False
-        problems.append("init_prize_storage failed; prize schedules could not be loaded.")
-        await log_exception("init_prize_storage", e)
+
     try:
         await init_deadchat_storage()
-        if deadchat_storage_message_id is None:
-            storage["DEADCHAT"] = False
-            problems.append("DEADCHAT_DATA storage missing; run /deadchat_init to create it.")
     except Exception as e:
         storage["DEADCHAT"] = False
-        problems.append("init_deadchat_storage failed; Dead Chat timestamps could not be loaded.")
+        problems.append("init_deadchat_storage failed; Dead Chat timestamps could not be loaded from Postgres.")
         await log_exception("init_deadchat_storage", e)
+
     try:
         await init_deadchat_state_storage()
-        if deadchat_state_storage_message_id is None:
-            storage["DEADCHAT_STATE"] = False
-            problems.append("DEADCHAT_STATE storage missing; run /deadchat_state_init to create it.")
     except Exception as e:
         storage["DEADCHAT_STATE"] = False
-        problems.append("init_deadchat_state_storage failed; Dead Chat state could not be loaded.")
+        problems.append("init_deadchat_state_storage failed; Dead Chat state could not be loaded from Postgres.")
         await log_exception("init_deadchat_state_storage", e)
+
     try:
         await init_twitch_state_storage()
-        if twitch_state_storage_message_id is None:
-            storage["TWITCH_STATE"] = False
-            problems.append("TWITCH_STATE storage missing; run /twitch_state_init to create it.")
     except Exception as e:
         storage["TWITCH_STATE"] = False
-        problems.append("init_twitch_state_storage failed; Twitch live state could not be loaded.")
+        problems.append("init_twitch_state_storage failed; Twitch live state could not be loaded from Postgres.")
         await log_exception("init_twitch_state_storage", e)
-    try:
-        await init_plague_storage()
-        if plague_storage_message_id is None:
-            storage["PLAGUE"] = False
-            problems.append("PLAGUE_DATA storage missing; run /plague_init to create it.")
-    except Exception as e:
-        storage["PLAGUE"] = False
-        problems.append("init_plague_storage failed; plague schedule and infected list could not be loaded.")
-        await log_exception("init_plague_storage", e)
+
     try:
         await init_member_join_storage()
-        if member_join_storage_message_id is None:
-            storage["MEMBERJOIN"] = False
-            problems.append("MEMBERJOIN_DATA storage missing; run /memberjoin_init to create it.")
     except Exception as e:
         storage["MEMBERJOIN"] = False
-        problems.append("init_member_join_storage failed; pending member joins could not be loaded.")
+        problems.append("init_member_join_storage failed; pending member joins could not be loaded from Postgres.")
         await log_exception("init_member_join_storage", e)
+
+    try:
+        await init_last_activity_storage()
+    except Exception as e:
+        storage["ACTIVITY"] = False
+        problems.append("init_last_activity_storage failed; last activity could not be loaded from Postgres.")
+        await log_exception("init_last_activity_storage", e)
+
     try:
         runtime_problems, runtime_results = await check_runtime_systems()
         problems.extend(runtime_problems)
@@ -612,41 +944,17 @@ async def run_all_inits_with_logging():
         }
         problems.append("Runtime system checks failed; see logs for details.")
         await log_exception("check_runtime_systems", e)
+
     lines = []
     lines.append("")
     lines.append("[STORAGE]")
-    if storage["STICKY"]:
-        lines.append("`✅` Sticky storage")
-    else:
-        lines.append("`⚠️` **Sticky storage** — STICKY_DATA storage message is missing or unreadable, so sticky messages cannot be loaded or saved.")
-    if storage["DEADCHAT"]:
-        lines.append("`✅` Dead Chat storage")
-    else:
-        lines.append("`⚠️` **Dead Chat storage** — DEADCHAT_DATA storage message is missing or unreadable, so Dead Chat idle timestamps cannot be persisted.")
-    if storage["DEADCHAT_STATE"]:
-        lines.append("`✅` Dead Chat state")
-    else:
-        lines.append("`⚠️` **Dead Chat state** — DEADCHAT_STATE storage message is missing or unreadable, so current holder and state cannot be persisted.")
-    if storage["PLAGUE"]:
-        lines.append("`✅` Plague storage")
-    else:
-        lines.append("`⚠️` **Plague storage** — PLAGUE_DATA storage message is missing or unreadable, so plague schedule and infected members cannot be persisted.")
-    if storage["PRIZE"]:
-        lines.append("`✅` Prize storage (movie/nitro/steam)")
-    else:
-        lines.append("`⚠️` **Prize storage** — One or more PRIZE_* storage messages are missing or unreadable, so scheduled prizes cannot be persisted.")
-    if storage["MEMBERJOIN"]:
-        lines.append("`✅` Member-join storage")
-    else:
-        lines.append("`⚠️` **Member-join storage** — MEMBERJOIN_DATA storage message is missing or unreadable, so delayed member roles cannot be persisted.")
-    if storage["TWITCH_STATE"]:
-        lines.append("`✅` Twitch state storage")
-    else:
-        lines.append("`⚠️` **Twitch state storage** — TWITCH_STATE storage message is missing or unreadable, so Twitch live/offline state cannot be persisted.")
-    if storage["CONFIG"]:
-        lines.append("`✅` Guild config storage")
-    else:
-        lines.append("`⚠️` **Guild config storage** — CONFIG_DATA storage message is missing or unreadable, so per-guild setup cannot be persisted.")
+    lines.append("`✅` Sticky storage (Postgres)" if storage["STICKY"] else "`⚠️` **Sticky storage** — Failed to load from Postgres.")
+    lines.append("`✅` Dead Chat storage (Postgres)" if storage["DEADCHAT"] else "`⚠️` **Dead Chat storage** — Failed to load from Postgres.")
+    lines.append("`✅` Dead Chat state (Postgres)" if storage["DEADCHAT_STATE"] else "`⚠️` **Dead Chat state** — Failed to load from Postgres.")
+    lines.append("`✅` Member-join storage (Postgres)" if storage["MEMBERJOIN"] else "`⚠️` **Member-join storage** — Failed to load from Postgres.")
+    lines.append("`✅` Twitch state storage (Postgres)" if storage["TWITCH_STATE"] else "`⚠️` **Twitch state storage** — Failed to load from Postgres.")
+    lines.append("`✅` Activity storage (Postgres)" if storage["ACTIVITY"] else "`⚠️` **Activity storage** — Failed to load from Postgres.")
+
     lines.append("")
     lines.append("[RUNTIME CONFIG]")
     if runtime_results.get("CHANNELS", False):
@@ -669,6 +977,7 @@ async def run_all_inits_with_logging():
         lines.append("`✅` Twitch config and announce channel")
     else:
         lines.append("`⚠️` **Twitch config and announce channel** — Twitch client ID/secret or announce channel is misconfigured, so live notifications cannot be sent.")
+
     if problems:
         lines.append("")
         lines.append("[DETAILS]")
@@ -677,171 +986,464 @@ async def run_all_inits_with_logging():
     else:
         lines.append("")
         lines.append("All systems passed basic storage and runtime checks.")
+
     text = "\n".join(lines)
     if len(text) > 1900:
         text = text[:1900]
     await log_to_bot_channel(text)
+
     if problems:
         await log_to_bot_channel(f"[STARTUP] {len(problems)} problems detected, see report above.")
     else:
         await log_to_bot_channel("[STARTUP] All systems passed storage and runtime checks.")
 
-async def find_storage_message(prefix: str) -> discord.Message | None:
-    if STORAGE_CHANNEL_ID == 0:
-        await log_to_bot_channel(f"find_storage_message: STORAGE_CHANNEL_ID is 0 for {prefix}")
-        return None
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        await log_to_bot_channel(f"find_storage_message: storage channel invalid for {prefix}")
-        return None
-    try:
-        async for msg in ch.history(limit=200, oldest_first=False):
-            if msg.content.startswith(prefix):
-                return msg
-    except Exception as e:
-        await log_to_bot_channel(f"find_storage_message error for {prefix}: {e}")
-        return None
-    await log_to_bot_channel(f"find_storage_message: no storage message found for {prefix}")
-    return None
-
 async def init_sticky_storage():
     global sticky_storage_message_id
-    if STORAGE_CHANNEL_ID == 0:
+    sticky_storage_message_id = None
+
+    if db_pool is None:
         return
-    msg = await find_storage_message("STICKY_DATA:")
-    if not msg:
-        return
-    sticky_storage_message_id = msg.id
-    data_str = msg.content[len("STICKY_DATA:"):]
-    if not data_str.strip():
-        return
-    try:
-        data = json.loads(data_str)
-        sticky_texts.clear()
-        sticky_messages.clear()
-        for cid_str, info in data.items():
-            try:
-                cid = int(cid_str)
-                if info.get("text"):
-                    sticky_texts[cid] = info["text"]
-                if info.get("message_id"):
-                    sticky_messages[cid] = info["message_id"]
-            except:
-                continue
-        await log_to_bot_channel(f"[STICKY] Loaded {len(sticky_texts)} sticky entries from storage.")
-    except Exception as e:
-        await log_to_bot_channel(f"Failed to load sticky data: {e}")
+
+    sticky_texts.clear()
+    sticky_messages.clear()
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT channel_id, text, message_id FROM sticky_data")
+
+    for row in rows:
+        cid = row["channel_id"]
+        if row["text"]:
+            sticky_texts[cid] = row["text"]
+        if row["message_id"]:
+            sticky_messages[cid] = row["message_id"]
+
+    await log_to_bot_channel(f"[STICKY] Loaded {len(sticky_texts)} sticky entries from Postgres.")
 
 async def save_stickies():
-    if STORAGE_CHANNEL_ID == 0 or sticky_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        return
-    try:
-        msg = await ch.fetch_message(sticky_storage_message_id)
-        data = {}
-        for cid, text in sticky_texts.items():
-            entry = {"text": text}
-            if cid in sticky_messages:
-                entry["message_id"] = sticky_messages[cid]
-            data[str(cid)] = entry
-        await msg.edit(content="STICKY_DATA:" + json.dumps(data))
-    except Exception as e:
-        await log_exception("save_stickies", e)
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            for cid, text in sticky_texts.items():
+                mid = sticky_messages.get(cid)
+                await conn.execute(
+                    """
+                    INSERT INTO sticky_data (channel_id, text, message_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (channel_id) DO UPDATE SET
+                        text = EXCLUDED.text,
+                        message_id = EXCLUDED.message_id
+                    """,
+                    cid, text, mid
+                )
+            await conn.execute(
+                "DELETE FROM sticky_data WHERE channel_id <> ALL($1::bigint[])",
+                list(sticky_texts.keys()),
+            )
 
 async def init_member_join_storage():
     global member_join_storage_message_id, pending_member_joins
-    msg = await find_storage_message("MEMBERJOIN_DATA:")
-    if not msg:
+    member_join_storage_message_id = None
+
+    if db_pool is None:
         return
-    member_join_storage_message_id = msg.id
-    raw = msg.content[len("MEMBERJOIN_DATA:"):]
-    try:
-        data = json.loads(raw or "[]")
-        if isinstance(data, list):
-            pending_member_joins[:] = data
-        else:
-            pending_member_joins[:] = []
-        await log_to_bot_channel(f"[MEMBERJOIN] Loaded {len(pending_member_joins)} pending entries from storage.")
-    except Exception:
-        pending_member_joins[:] = []
+
+    pending_member_joins = []
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT guild_id, member_id, assign_at FROM member_join_queue"
+        )
+
+    for row in rows:
+        assign_at = row["assign_at"]
+        pending_member_joins.append(
+            {
+                "guild_id": row["guild_id"],
+                "member_id": row["member_id"],
+                "assign_at": assign_at.isoformat() + "Z",
+            }
+        )
+
+    await log_to_bot_channel(
+        f"[MEMBERJOIN] Loaded {len(pending_member_joins)} pending entries from Postgres."
+    )
 
 async def save_member_join_storage():
-    if STORAGE_CHANNEL_ID == 0 or member_join_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        return
-    try:
-        msg = await ch.fetch_message(member_join_storage_message_id)
-        await msg.edit(content="MEMBERJOIN_DATA:" + json.dumps(pending_member_joins))
-    except Exception as e:
-        await log_exception("save_member_join_storage", e)
 
-async def init_plague_storage():
-    global plague_storage_message_id, plague_scheduled, infected_members
-    msg = await find_storage_message("PLAGUE_DATA:")
-    if not msg:
-        return
-    plague_storage_message_id = msg.id
-    try:
-        raw = msg.content[len("PLAGUE_DATA:"):]
-        data = json.loads(raw or "[]")
-        plague_scheduled.clear()
-        infected_members.clear()
-        if isinstance(data, list):
-            plague_scheduled.extend(data)
-        elif isinstance(data, dict):
-            plague_scheduled.extend(data.get("scheduled", []))
-            infected_raw = data.get("infected", {})
-            for mid_str, ts in infected_raw.items():
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            for entry in pending_member_joins:
+                guild_id = entry.get("guild_id")
+                member_id = entry.get("member_id")
+                assign_at_str = entry.get("assign_at")
+                if not (guild_id and member_id and assign_at_str):
+                    continue
                 try:
-                    infected_members[int(mid_str)] = ts
-                except:
-                    pass
-        await log_to_bot_channel(
-            f"[PLAGUE] Loaded {len(plague_scheduled)} scheduled day(s), {len(infected_members)} infected member(s) from storage."
+                    assign_at = datetime.fromisoformat(assign_at_str.replace("Z", ""))
+                except Exception:
+                    continue
+                await conn.execute(
+                    """
+                    INSERT INTO member_join_queue (guild_id, member_id, assign_at)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (guild_id, member_id) DO UPDATE SET
+                        assign_at = EXCLUDED.assign_at
+                    """,
+                    guild_id, member_id, assign_at
+                )
+
+def build_mm_dd(month_name: str, day: int) -> str | None:
+    month_num = MONTH_TO_NUM.get(month_name)
+    if not month_num or not (1 <= day <= 31):
+        return None
+    return f"{month_num:02d}-{day:02d}"
+
+
+async def set_birthday(guild_id: int, user_id: int, mm_dd: str):
+    if db_pool is None:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO birthdays (guild_id, user_id, mm_dd)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET mm_dd = EXCLUDED.mm_dd;
+            """,
+            guild_id,
+            user_id,
+            mm_dd,
+        )
+
+
+async def remove_birthday(guild_id: int, user_id: int) -> bool:
+    if db_pool is None:
+        return False
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM birthdays WHERE guild_id = $1 AND user_id = $2;",
+            guild_id,
+            user_id,
+        )
+    return result.split()[-1] != "0"
+
+async def get_guild_qotd_settings(guild_id: int):
+    """
+    Returns QOTD settings for a guild:
+    {
+        "channel_id": int,
+        "enabled": bool,
+        "ping_role_id": int  # 0 means "no role"
+    }
+    """
+    if db_pool is None:
+        return None
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT channel_id, enabled, ping_role_id FROM qotd_settings WHERE guild_id = $1",
+            guild_id,
+        )
+
+    if not row:
+        return None
+
+    ping_role_id = row.get("ping_role_id", 0) if isinstance(row, dict) else row["ping_role_id"]
+    if ping_role_id is None:
+        ping_role_id = 0
+
+    return {
+        "channel_id": int(row["channel_id"]) if row["channel_id"] else 0,
+        "enabled": bool(row["enabled"]),
+        "ping_role_id": int(ping_role_id or 0),
+    }
+
+async def get_guild_vc_links(guild_id: int) -> dict[int, int]:
+    """
+    Returns {channel_id: role_id} for this guild.
+    """
+    if db_pool is None:
+        return {}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT channel_id, role_id FROM vc_role_links WHERE guild_id = $1",
+            guild_id,
+        )
+    return {int(r["channel_id"]): int(r["role_id"]) for r in rows}
+
+
+async def set_vc_role_link(guild_id: int, channel_id: int, role_id: int):
+    """
+    Link a voice channel to a role (join = add, leave = remove).
+    """
+    if db_pool is None:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO vc_role_links (guild_id, channel_id, role_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, channel_id)
+            DO UPDATE SET role_id = EXCLUDED.role_id;
+            """,
+            guild_id,
+            channel_id,
+            role_id,
+        )
+
+
+async def remove_vc_role_link(guild_id: int, channel_id: int) -> bool:
+    """
+    Remove the VC→role link for this channel.
+    Returns True if something was deleted.
+    """
+    if db_pool is None:
+        return False
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM vc_role_links WHERE guild_id = $1 AND channel_id = $2;",
+            guild_id,
+            channel_id,
+        )
+    return result.split()[-1] != "0"
+    
+
+async def get_qotd_sheet_and_tab():
+    """
+    Returns (worksheet, season_name) based on the current month.
+    Tabs supported: 'Regular', 'Fall Season', 'Christmas'
+    """
+    if gc is None or not SHEET_ID:
+        raise RuntimeError("QOTD is not configured (Google credentials or sheet id missing).")
+
+    sh = gc.open_by_key(SHEET_ID)
+    today = datetime.utcnow()
+
+    if 10 <= today.month <= 11:
+        tab = "Fall Season"
+    elif today.month == 12:
+        tab = "Christmas"
+    else:
+        tab = "Regular"
+
+    try:
+        ws = sh.worksheet(tab)
+    except gspread.WorksheetNotFound:
+        ws = sh.sheet1
+        tab = ws.title
+        print(f"QOTD: worksheet '{tab}' not found; using first sheet instead.")
+
+    return ws, tab
+
+
+async def get_question_of_the_day() -> str | None:
+    """
+    Pull an unused QOTD from the Google Sheet, mark it as used, and return it.
+    Automatically switches seasonal tabs.
+    """
+    worksheet, season = await get_qotd_sheet_and_tab()
+
+    all_vals = worksheet.get_all_values()
+    if len(all_vals) < 2:
+        print("QOTD: Sheet empty or missing questions.")
+        return None
+
+    questions = all_vals[1:]
+    unused = []
+
+    for row in questions:
+        row += [""] * (2 - len(row))
+
+        status_a = row[0].strip()
+        status_b = row[1].strip()
+        question_text = row[1].strip() or row[0].strip()
+
+        if question_text and (not status_a or not status_b):
+            unused.append(row)
+
+    if not unused:
+        print("QOTD: All questions used; resetting sheet.")
+        worksheet.update("A2:B", [[""] * 2 for _ in range(len(questions))])
+        unused = questions
+
+    chosen = pyrandom.choice(unused)
+    chosen += [""] * (2 - len(chosen))
+    question = chosen[1].strip() or chosen[0].strip()
+
+    if not question:
+        print("QOTD: Chosen row empty, skipping.")
+        return None
+
+    row_idx = questions.index(chosen) + 2 
+    status_col = "A" if chosen[1].strip() else "B"
+
+    try:
+        worksheet.update(
+            f"{status_col}{row_idx}",
+            [[f"Used {datetime.utcnow().strftime('%Y-%m-%d')}"]]
         )
     except Exception as e:
-        await log_to_bot_channel(f"init_plague_storage failed: {e}")
+        print("QOTD: Failed marking used:", repr(e))
 
-async def save_plague_storage():
-    if STORAGE_CHANNEL_ID == 0 or plague_storage_message_id is None:
-        await log_to_bot_channel("save_plague_storage: storage id missing")
-        return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        await log_to_bot_channel("save_plague_storage: storage channel invalid")
-        return
-    payload = {
-        "scheduled": plague_scheduled,
-        "infected": {str(k): v for k, v in infected_members.items()},
-    }
+    return question
+
+async def post_daily_qotd():
+    """Pulls the daily QOTD from Google Sheets and posts to all servers."""
     try:
-        msg = await ch.fetch_message(plague_storage_message_id)
-        await msg.edit(content="PLAGUE_DATA:" + json.dumps(payload))
+        question = await get_question_of_the_day()
+        if not question:
+            print("No QOTD available.")
+            return
     except Exception as e:
-        await log_to_bot_channel(f"save_plague_storage failed: {e}")
+        await log_exception("QOTD Google Sheets Fetch Error", e)
+        return
+
+    for guild in bot.guilds:
+        try:
+            settings = await get_guild_qotd_settings(guild.id)
+            if not settings or not settings["enabled"]:
+                continue
+
+            channel = guild.get_channel(settings["channel_id"])
+            if not channel:
+                continue
+
+            embed = discord.Embed(
+                title="❓ Question of the Day",
+                description=question,
+                color=discord.Color.gold(),
+            )
+
+            ping_role_id = settings.get("ping_role_id", 0) or 0
+            ping_role = guild.get_role(ping_role_id) if ping_role_id else None
+
+            if ping_role:
+                allowed = discord.AllowedMentions(roles=True)
+                await channel.send(
+                    content=ping_role.mention,
+                    embed=embed,
+                    allowed_mentions=allowed,
+                )
+            else:
+                await channel.send(embed=embed)
+
+        except Exception as e:
+            await log_exception(f"post_daily_qotd guild {guild.id}", e)
+
+
+async def get_guild_birthdays(guild_id: int) -> dict[str, str]:
+    if db_pool is None:
+        return {}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT user_id, mm_dd FROM birthdays WHERE guild_id = $1;",
+            guild_id,
+        )
+    return {str(r["user_id"]): r["mm_dd"] for r in rows}
+
+
+async def get_birthday_public_location(guild_id: int) -> tuple[int, int] | None:
+    if db_pool is None:
+        return None
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT channel_id, message_id FROM birthday_public_messages WHERE guild_id = $1;",
+            guild_id,
+        )
+    if row:
+        return int(row["channel_id"]), int(row["message_id"])
+    return None
+
+
+async def set_birthday_public_location(guild_id: int, channel_id: int, message_id: int):
+    if db_pool is None:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO birthday_public_messages (guild_id, channel_id, message_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id) DO UPDATE
+            SET channel_id = EXCLUDED.channel_id,
+                message_id = EXCLUDED.message_id;
+            """,
+            guild_id,
+            channel_id,
+            message_id,
+        )
+
+
+async def build_birthday_embed(guild: discord.Guild) -> discord.Embed:
+    birthdays = await get_guild_birthdays(guild.id)
+    lines: list[str] = []
+
+    for user_id, mm_dd in sorted(birthdays.items(), key=lambda x: x[1]):
+        member = guild.get_member(int(user_id))
+        if member:
+            lines.append(f"{member.mention} — `{mm_dd}`")
+        else:
+            lines.append(f"<@{user_id}> — `{mm_dd}`")
+
+    description = "\n".join(lines) if lines else "No birthdays yet!"
+    description += (
+        "\n\n**SHARE YOUR BIRTHDAY**\n"
+        "• </birthday_set:0> - Add your birthday to the server’s shared birthday list."
+    )
+
+    embed = discord.Embed(
+        title="OUR BIRTHDAYS!",
+        description=description,
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Messages in this channel may auto-delete after a while.")
+    return embed
+
+
+async def update_birthday_list_message(guild: discord.Guild):
+    loc = await get_birthday_public_location(guild.id)
+    if not loc:
+        return
+    ch_id, msg_id = loc
+    channel = guild.get_channel(ch_id)
+    if not channel or not isinstance(channel, discord.TextChannel):
+        return
+    try:
+        msg = await channel.fetch_message(msg_id)
+        embed = await build_birthday_embed(guild)
+        await msg.edit(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+    except Exception as e:
+        await log_exception("update_birthday_list_message", e)
+
 
 async def trigger_plague_infection(member: discord.Member):
-    infected_role = member.guild.get_role(INFECTED_ROLE_ID)
+    guild = member.guild
+    cfg = await ensure_guild_config(guild)
+    infected_role_id = cfg.get("infected_role_id", 0)
+    infected_role = guild.get_role(infected_role_id)
     if not infected_role or infected_role in member.roles:
         return
     await member.add_roles(infected_role, reason="Caught the monthly Dead Chat plague")
     expires_at = (datetime.utcnow() + timedelta(days=3)).isoformat() + "Z"
-    infected_members[member.id] = expires_at
-    plague_scheduled.clear()
-    await save_plague_storage()
-    await log_to_bot_channel(
-        f"[PLAGUE] {member.mention} infected; role expires at {expires_at}."
-    )
+    infected_guild = infected_members.get(guild.id, {})
+    infected_guild[member.id] = expires_at
+    infected_members[guild.id] = infected_guild
+    plague_scheduled_guild = plague_scheduled.get(guild.id, [])
+    plague_scheduled_guild.clear()
+    plague_scheduled[guild.id] = plague_scheduled_guild
+    cfg["infected_members"] = {str(k): v for k, v in infected_guild.items()}
+    cfg["plague_scheduled"] = plague_scheduled_guild
+    await save_guild_config_db(guild, cfg)
+    await log_to_guild_bot_channel(guild, f"[PLAGUE] {member.mention} infected; role expires at {expires_at}.")
 
-async def check_plague_active():
-    if not plague_scheduled or INFECTED_ROLE_ID == 0:
+async def check_plague_active(guild: discord.Guild):
+    sch = plague_scheduled.get(guild.id, [])
+    if not sch:
         return False
     now = datetime.utcnow()
-    for entry in plague_scheduled:
+    for entry in sch:
         start_str = entry.get("start")
         if start_str:
             try:
@@ -860,155 +1462,49 @@ async def check_plague_active():
             return True
     return False
 
-def parse_schedule_datetime(when: str) -> datetime | None:
-    try:
-        return datetime.strptime(when, "%Y-%m-%d %H:%M")
-    except ValueError:
-        return None
-
-async def init_prize_storage():
-    global movie_prize_storage_message_id, nitro_prize_storage_message_id, steam_prize_storage_message_id
-    global movie_scheduled_prizes, nitro_scheduled_prizes, steam_scheduled_prizes
-    if STORAGE_CHANNEL_ID == 0:
-        return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        await log_to_bot_channel("init_prize_storage: invalid storage channel")
-        return
-    movie_msg = await find_storage_message("PRIZE_MOVIE_DATA:")
-    nitro_msg = await find_storage_message("PRIZE_NITRO_DATA:")
-    steam_msg = await find_storage_message("PRIZE_STEAM_DATA:")
-    if not (movie_msg and nitro_msg and steam_msg):
-        await log_to_bot_channel("Prize storage messages missing → Run /prize_init first")
-        return
-    movie_prize_storage_message_id = movie_msg.id
-    nitro_prize_storage_message_id = nitro_msg.id
-    steam_prize_storage_message_id = steam_msg.id
-    def safe_load(content, prefix):
-        try:
-            return json.loads(content[len(prefix):]) if content.startswith(prefix) else []
-        except:
-            return []
-    movie_scheduled_prizes = safe_load(movie_msg.content, "PRIZE_MOVIE_DATA:")
-    nitro_scheduled_prizes = safe_load(nitro_msg.content, "PRIZE_NITRO_DATA:")
-    steam_scheduled_prizes = safe_load(steam_msg.content, "PRIZE_STEAM_DATA:")
-    await log_to_bot_channel(
-        f"[PRIZE] Loaded {len(movie_scheduled_prizes)} movie, {len(nitro_scheduled_prizes)} nitro, {len(steam_scheduled_prizes)} steam scheduled prizes from storage."
-    )
-
-async def save_prize_storage():
-    if STORAGE_CHANNEL_ID == 0:
-        return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        return
-    for msg_id, data, prefix in [
-        (movie_prize_storage_message_id, movie_scheduled_prizes, "PRIZE_MOVIE_DATA:"),
-        (nitro_prize_storage_message_id, nitro_scheduled_prizes, "PRIZE_NITRO_DATA:"),
-        (steam_prize_storage_message_id, steam_scheduled_prizes, "PRIZE_STEAM_DATA:"),
-    ]:
-        if msg_id:
-            try:
-                msg = await ch.fetch_message(msg_id)
-                await msg.edit(content=prefix + json.dumps(data))
-            except Exception as e:
-                await log_exception(f"save_prize_storage_{prefix}", e)
-
-def get_prize_list_and_entries(prize_type: str):
-    if prize_type == "movie":
-        return movie_scheduled_prizes
-    if prize_type == "nitro":
-        return nitro_scheduled_prizes
-    if prize_type == "steam":
-        return steam_scheduled_prizes
-    return None
-
-async def run_scheduled_prize(prize_type: str, prize_id: int):
-    if prize_type == "movie":
-        entries = movie_scheduled_prizes
-        view_cls = MoviePrizeView
-    elif prize_type == "nitro":
-        entries = nitro_scheduled_prizes
-        view_cls = NitroPrizeView
-    elif prize_type == "steam":
-        entries = steam_scheduled_prizes
-        view_cls = SteamPrizeView
-    else:
-        return
-    record = None
-    for p in entries:
-        if p.get("id") == prize_id:
-            record = p
-            break
-    if not record:
-        return
-    send_at = parse_schedule_datetime(record.get("send_at", ""))
-    if not send_at:
-        return
-    now = datetime.utcnow()
-    delay = (send_at - now).total_seconds()
-    if delay > 0:
-        await asyncio.sleep(delay)
-    channel_id = PRIZE_DROP_CHANNEL_ID or record.get("channel_id")
-    content = record.get("content")
-    if not channel_id or not content:
-        return
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        return
-    view = view_cls()
-    await channel.send(content, view=view)
-    entries[:] = [p for p in entries if p.get("id") != prize_id]
-    await save_prize_storage()
-    await log_to_bot_channel(f"[PRIZE] Sent scheduled {prize_type} prize ID {prize_id} to channel {channel_id}.")
-
-async def add_scheduled_prize(prize_type: str, channel_id: int, content: str, date_str: str):
-    if prize_type == "movie":
-        entries = movie_scheduled_prizes
-    elif prize_type == "nitro":
-        entries = nitro_scheduled_prizes
-    elif prize_type == "steam":
-        entries = steam_scheduled_prizes
-    else:
-        return
-    existing_ids = [p.get("id", 0) for p in entries]
+async def add_scheduled_prize(guild: discord.Guild, title: str, channel_id: int, content: str, date_str: str):
+    cfg = await ensure_guild_config(guild)
+    sch = cfg.get("prize_scheduled", [])
+    existing_ids = [p.get("id", 0) for p in sch]
     new_id = max(existing_ids) + 1 if existing_ids else 1
-    target_channel_id = PRIZE_DROP_CHANNEL_ID or channel_id
-    entries.append(
+    target_channel_id = cfg.get("prize_drop_channel_id") or channel_id
+    sch.append(
         {
             "id": new_id,
             "channel_id": target_channel_id,
             "content": content,
             "date": date_str,
+            "title": title,
         }
     )
-    await save_prize_storage()
+    cfg["prize_scheduled"] = sch
+    await save_guild_config_db(guild, cfg)
 
 async def initialize_dead_chat():
-    global dead_current_holder_id
-    if not DEAD_CHAT_CHANNEL_IDS or DEAD_CHAT_ROLE_ID == 0:
-        return
     for guild in bot.guilds:
-        role = guild.get_role(DEAD_CHAT_ROLE_ID)
-        if role and role.members:
-            dead_current_holder_id = role.members[0].id
-            break
-    for chan_id in DEAD_CHAT_CHANNEL_IDS:
-        if chan_id in deadchat_last_times:
+        cfg = await ensure_guild_config(guild)
+        dead_role_id = cfg.get("dead_chat_role_id", 0)
+        if dead_role_id == 0:
             continue
-        deadchat_last_times[chan_id] = discord.utils.utcnow().isoformat() + "Z"
+        role = guild.get_role(dead_role_id)
+        if role and role.members:
+            dead_current_holders[guild.id] = role.members[0].id
+        for chan_id in cfg.get("dead_chat_channel_ids", []):
+            if chan_id in deadchat_last_times:
+                continue
+            deadchat_last_times[chan_id] = discord.utils.utcnow().isoformat() + "Z"
     await save_deadchat_storage()
 
 async def handle_dead_chat_message(message: discord.Message):
-    global dead_current_holder_id
-    cfg = await get_guild_config(message.guild)
-    dead_role_id = cfg.get("dead_chat_role_id", DEAD_CHAT_ROLE_ID) if cfg else DEAD_CHAT_ROLE_ID
-    dead_channels = cfg.get("dead_chat_channel_ids", DEAD_CHAT_CHANNEL_IDS) if cfg else DEAD_CHAT_CHANNEL_IDS
-    active_role_id = cfg.get("active_role_id", ACTIVE_ROLE_ID) if cfg else ACTIVE_ROLE_ID
+    guild = message.guild
+    cfg = await ensure_guild_config(guild)
+    dead_role_id = cfg.get("dead_chat_role_id", 0)
+    dead_channels = cfg.get("dead_chat_channel_ids", [])
+    active_role_id = cfg.get("active_role_id", 0)
     if dead_role_id == 0 or message.channel.id not in dead_channels or message.author.id in IGNORE_MEMBER_IDS:
         return
     if active_role_id != 0:
-        active_role = message.guild.get_role(active_role_id)
+        active_role = guild.get_role(active_role_id)
         if active_role and active_role not in message.author.roles:
             return
     now = discord.utils.utcnow()
@@ -1016,7 +1512,7 @@ async def handle_dead_chat_message(message: discord.Message):
     now_s = now.isoformat() + "Z"
     last_raw = deadchat_last_times.get(cid)
     deadchat_last_times[cid] = now_s
-    await save_deadchat_storage()
+    deadchat_dirty = True
     if not last_raw:
         return
     try:
@@ -1025,7 +1521,7 @@ async def handle_dead_chat_message(message: discord.Message):
         return
     if (now - last_time).total_seconds() < DEAD_CHAT_IDLE_SECONDS:
         return
-    role = message.guild.get_role(dead_role_id)
+    role = guild.get_role(dead_role_id)
     if not role:
         return
     if DEAD_CHAT_COOLDOWN_SECONDS > 0:
@@ -1036,195 +1532,223 @@ async def handle_dead_chat_message(message: discord.Message):
         if member.id != message.author.id:
             await member.remove_roles(role, reason="Dead Chat stolen")
     await message.author.add_roles(role, reason="Dead Chat claimed")
-    dead_current_holder_id = message.author.id
+    dead_current_holders[guild.id] = message.author.id
     dead_last_win_time[message.author.id] = now
 
     today_str = now.strftime("%Y-%m-%d")
     hour_utc = now.hour
     triggered_plague = False
-    if hour_utc >= PRIZE_PLAGUE_TRIGGER_HOUR_UTC and plague_scheduled:
-        for entry in list(plague_scheduled):
-            if entry.get("date") == today_str:
-                await trigger_plague_infection(message.author)
-                triggered_plague = True
-                break
+    if hour_utc >= PRIZE_PLAGUE_TRIGGER_HOUR_UTC and await check_plague_active(guild):
+        await trigger_plague_infection(message.author)
+        triggered_plague = True
 
     triggered_prize = False
     if hour_utc >= PRIZE_PLAGUE_TRIGGER_HOUR_UTC:
-        for prize_list, view_cls in [
-            (movie_scheduled_prizes, MoviePrizeView),
-            (nitro_scheduled_prizes, NitroPrizeView),
-            (steam_scheduled_prizes, SteamPrizeView)
-        ]:
-            matching = [p for p in prize_list if p.get("date") == today_str]
-            if matching:
-                triggered_prize = True
-            for p in matching:
-                cfg_drop_id = cfg.get("prize_drop_channel_id") if cfg else None
-                channel_id = cfg_drop_id or PRIZE_DROP_CHANNEL_ID or p.get("channel_id") or message.channel.id
-                channel = message.guild.get_channel(channel_id)
-                if not channel:
-                    channel = message.channel
-                view = view_cls()
-                await channel.send(p.get("content", ""), view=view)
-            prize_list[:] = [p for p in prize_list if p.get("date") != today_str]
-        if triggered_prize:
-            await save_prize_storage()
-            await log_to_bot_channel(f"[PRIZE] Daily prize drop(s) sent for {today_str}.")
+        sch = cfg.get("prize_scheduled", [])
+        matching = [p for p in sch if p.get("date") == today_str]
+        if matching:
+            triggered_prize = True
+        for p in matching:
+            title = p.get("title")
+            rarity = cfg.get("prize_defs", {}).get(title)
+            if not rarity:
+                continue
+            content = p.get("content") or f"**YOU'VE FOUND A PRIZE!**\nPrize: *{title}*\nDrop Rate: *{rarity}*"
+            channel_id = cfg.get("prize_drop_channel_id") or p.get("channel_id") or message.channel.id
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                channel = message.channel
+            view = PrizeView(title, rarity)
+            await channel.send(content, view=view)
+        new_sch = [p for p in sch if p.get("date") != today_str]
+        if len(new_sch) != len(sch):
+            cfg["prize_scheduled"] = new_sch
+            await save_guild_config_db(guild, cfg)
+            await log_to_guild_bot_channel(guild, f"[PRIZE] Daily prize drop(s) sent for {today_str}.")
 
     for old_cid, mid in list(dead_last_notice_message_ids.items()):
-        if mid:
-            ch = message.guild.get_channel(old_cid)
-            if ch:
-                try:
-                    m = await ch.fetch_message(mid)
-                    await m.delete()
-                except:
-                    pass
+        if not mid:
+            continue
+        ch = bot.get_channel(old_cid)
+        if ch:
+            try:
+                m = await ch.fetch_message(mid)
+                await m.delete()
+            except:
+                pass
 
     if triggered_plague:
-        plague_text = PLAGUE_OUTBREAK_MESSAGE.format(mention=message.author.mention)
+        plague_text = (cfg.get("plague_outbreak_text") or DEFAULT_PLAGUE_OUTBREAK_MESSAGE).format(mention=message.author.mention)
         notice = await message.channel.send(plague_text)
-        await log_to_bot_channel(
-            f"[PLAGUE] {message.author.mention} infected on {today_str} in {message.channel.mention}."
-        )
+        await log_to_guild_bot_channel(guild, f"[PLAGUE] {message.author.mention} infected on {today_str} in {message.channel.mention}.")
     else:
         minutes = DEAD_CHAT_IDLE_SECONDS // 60
-        notice_text = DEADCHAT_STEAL_MESSAGE.format(
-            mention=message.author.mention,
-            role=role.mention,
-            minutes=minutes
-        )
+        deadchat_text = cfg.get("deadchat_steal_text") or DEFAULT_DEADCHAT_STEAL_MESSAGE
+        notice_text = deadchat_text.format(mention=message.author.mention, role=role.mention, minutes=minutes)
         notice = await message.channel.send(notice_text)
-        await log_to_bot_channel(
-            f"[DEADCHAT] {message.author.mention} stole {role.mention} in {message.channel.mention} after {minutes}+ minutes idle."
-        )
+        await log_to_guild_bot_channel(guild, f"[DEADCHAT] {message.author.mention} stole {role.mention} in {message.channel.mention} after {minutes}+ minutes idle.")
 
     dead_last_notice_message_ids[message.channel.id] = notice.id
     await save_deadchat_state()
 
 async def init_deadchat_storage():
     global deadchat_storage_message_id, deadchat_last_times
-    msg = await find_storage_message("DEADCHAT_DATA:")
-    if not msg:
+    deadchat_storage_message_id = None  
+
+    if db_pool is None:
         return
-    deadchat_storage_message_id = msg.id
-    raw = msg.content[len("DEADCHAT_DATA:"):]
-    if not raw.strip():
-        deadchat_last_times.clear()
-        return
-    data = json.loads(raw)
+
     deadchat_last_times.clear()
-    for cid_str, ts in data.items():
-        try:
-            deadchat_last_times[int(cid_str)] = ts
-        except:
-            pass
-    await log_to_bot_channel(f"[DEADCHAT] Loaded timestamps for {len(deadchat_last_times)} channel(s).")
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT channel_id, last_time FROM deadchat_last_times")
+
+    for row in rows:
+        cid = row["channel_id"]
+        ts = row["last_time"]
+        deadchat_last_times[cid] = ts.isoformat() + "Z"
+
+    await log_to_bot_channel(
+        f"[DEADCHAT] Loaded timestamps for {len(deadchat_last_times)} channel(s) from Postgres."
+    )
 
 async def save_deadchat_storage():
-    global deadchat_storage_message_id
-    if STORAGE_CHANNEL_ID == 0 or deadchat_storage_message_id is None:
-        await log_to_bot_channel("save_deadchat_storage: storage id missing")
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        await log_to_bot_channel("save_deadchat_storage: storage channel invalid")
-        return
-    try:
-        msg = await ch.fetch_message(deadchat_storage_message_id)
-        await msg.edit(content="DEADCHAT_DATA:" + json.dumps(deadchat_last_times))
-    except discord.Forbidden:
-        await log_to_bot_channel("DEADCHAT_DATA: Bot missing 'Manage Messages' in storage channel")
-    except discord.NotFound:
-        await log_to_bot_channel("DEADCHAT_DATA message deleted — Run /deadchat_init")
-        deadchat_storage_message_id = None
-    except Exception as e:
-        await log_to_bot_channel(f"Deadchat save failed: {e}")
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            for cid, ts_str in deadchat_last_times.items():
+                try:
+                    dt = datetime.fromisoformat(ts_str.replace("Z", ""))
+                except Exception:
+                    continue
+                await conn.execute(
+                    """
+                    INSERT INTO deadchat_last_times (channel_id, last_time)
+                    VALUES ($1, $2)
+                    ON CONFLICT (channel_id) DO UPDATE SET
+                        last_time = EXCLUDED.last_time
+                    """,
+                    cid, dt
+                )
 
 async def init_deadchat_state_storage():
     global deadchat_state_storage_message_id
-    msg = await find_storage_message("DEADCHAT_STATE:")
-    if not msg:
-        return
-    deadchat_state_storage_message_id = msg.id
+    deadchat_state_storage_message_id = None  
     await load_deadchat_state()
 
-async def load_deadchat_state():
-    global dead_current_holder_id, dead_last_win_time, dead_last_notice_message_ids
-    if not deadchat_state_storage_message_id or STORAGE_CHANNEL_ID == 0:
-        return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch:
-        return
-    try:
-        msg = await ch.fetch_message(deadchat_state_storage_message_id)
-        raw = msg.content[len("DEADCHAT_STATE:"):]
-        if not raw.strip():
-            return
-        data = json.loads(raw)
-        dead_current_holder_id = data.get("current_holder")
-        dead_last_win_time = {}
-        for k, v in data.get("last_win_times", {}).items():
-            try:
-                dead_last_win_time[int(k)] = datetime.fromisoformat(v.replace("Z", ""))
-            except:
-                pass
-        dead_last_notice_message_ids = {int(k): v for k, v in data.get("notice_msg_ids", {}).items() if v}
-    except Exception as e:
-        await log_to_bot_channel(f"Failed to load DEADCHAT_STATE: {e}")
+async def load_deadchat_state(guild_id: int):
+    global dead_last_win_time, dead_last_notice_message_ids, dead_current_holders
 
-async def save_deadchat_state():
-    if STORAGE_CHANNEL_ID == 0 or deadchat_state_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
+
+    dead_current_holders = {}
+    dead_last_win_time = {}
+    dead_last_notice_message_ids = {}
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT current_holders, last_win_times, notice_msg_ids FROM deadchat_state WHERE guild_id = $1",
+            guild_id,
+        )
+
+    if not row:
         return
-    data = {
-        "current_holder": dead_current_holder_id,
-        "last_win_times": {str(k): v.isoformat() + "Z" for k, v in dead_last_win_time.items()},
-        "notice_msg_ids": dead_last_notice_message_ids
-    }
+
     try:
-        msg = await ch.fetch_message(deadchat_state_storage_message_id)
-        await msg.edit(content="DEADCHAT_STATE:" + json.dumps(data))
-    except Exception as e:
-        await log_to_bot_channel(f"Deadchat state save failed: {e}")
+        ch_json = row["current_holders"] or {}
+        lw_json = row["last_win_times"] or {}
+        nm_json = row["notice_msg_ids"] or {}
+    except Exception:
+        return
+
+    dead_current_holders = {int(k): v for k, v in ch_json.items()}
+
+    for k, v in lw_json.items():
+        try:
+            dead_last_win_time[int(k)] = datetime.fromisoformat(v.replace("Z", ""))
+        except Exception:
+            pass
+
+    dead_last_notice_message_ids = {int(k): v for k, v in nm_json.items() if v}
+
+async def save_deadchat_state(guild_id: int):
+    if db_pool is None:
+        return
+
+    data = {
+        "current_holders": {str(k): v for k, v in dead_current_holders.items()},
+        "last_win_times": {str(k): v.isoformat() + "Z" for k, v in dead_last_win_time.items()},
+        "notice_msg_ids": {str(k): v for k, v in dead_last_notice_message_ids.items()},
+    }
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO deadchat_state (guild_id, current_holders, last_win_times, notice_msg_ids)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (guild_id) DO UPDATE SET
+                current_holders = EXCLUDED.current_holders,
+                last_win_times = EXCLUDED.last_win_times,
+                notice_msg_ids = EXCLUDED.notice_msg_ids
+            """,
+            guild_id,
+            data["current_holders"],
+            data["last_win_times"],
+            data["notice_msg_ids"],
+        )
+        
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO deadchat_state (guild_id, current_holders, last_win_times, notice_msg_ids)
+            VALUES (0, $1, $2, $3)
+            ON CONFLICT (guild_id) DO UPDATE SET
+                current_holders = EXCLUDED.current_holders,
+                last_win_times = EXCLUDED.last_win_times,
+                notice_msg_ids = EXCLUDED.notice_msg_ids
+            """,
+            data["current_holders"],
+            data["last_win_times"],
+            data["notice_msg_ids"],
+        )
 
 async def init_twitch_state_storage():
     global twitch_state_storage_message_id
-    msg = await find_storage_message("TWITCH_STATE:")
-    if not msg:
-        return
-    twitch_state_storage_message_id = msg.id
+    twitch_state_storage_message_id = None 
     await load_twitch_state()
-    await log_to_bot_channel(f"[TWITCH] State storage initialized with id {twitch_state_storage_message_id}.")
+    await log_to_bot_channel("[TWITCH] State storage initialized from Postgres.")
 
 async def load_twitch_state():
     global twitch_live_state
-    if not twitch_state_storage_message_id:
+
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    try:
-        msg = await ch.fetch_message(twitch_state_storage_message_id)
-        loaded = json.loads(msg.content[len("TWITCH_STATE:"):])
-        twitch_live_state = {k.lower(): bool(v) for k, v in loaded.items()}
-        await log_to_bot_channel(f"[TWITCH] Loaded live state for {len(twitch_live_state)} channel(s).")
-    except Exception as e:
-        await log_exception("load_twitch_state", e)
-        twitch_live_state = {name: False for name in TWITCH_CHANNELS}
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT username, is_live FROM twitch_state")
+
+    twitch_live_state = {row["username"].lower(): bool(row["is_live"]) for row in rows}
+    await log_to_bot_channel(f"[TWITCH] Loaded live state for {len(twitch_live_state)} channel(s) from Postgres.")
 
 async def save_twitch_state():
-    if STORAGE_CHANNEL_ID == 0 or twitch_state_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch:
-        return
-    try:
-        msg = await ch.fetch_message(twitch_state_storage_message_id)
-        await msg.edit(content="TWITCH_STATE:" + json.dumps(twitch_live_state))
-    except Exception as e:
-        await log_exception("save_twitch_state", e)
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            for name, is_live in twitch_live_state.items():
+                await conn.execute(
+                    """
+                    INSERT INTO twitch_state (username, is_live)
+                    VALUES ($1, $2)
+                    ON CONFLICT (username) DO UPDATE SET
+                        is_live = EXCLUDED.is_live
+                    """,
+                    name, is_live
+                )
 
 async def get_twitch_token():
     global twitch_access_token
@@ -1247,7 +1771,8 @@ async def fetch_twitch_streams():
     if not twitch_access_token:
         return {}
     headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {twitch_access_token}"}
-    params = [("user_login", name) for name in TWITCH_CHANNELS]
+    names = list(all_twitch_channels)
+    params = [("user_login", name) for name in names]
     async with aiohttp.ClientSession() as session:
         async with session.get("https://api.twitch.tv/helix/streams", headers=headers, params=params) as resp:
             if resp.status == 401:
@@ -1265,58 +1790,273 @@ async def fetch_twitch_streams():
 
 async def init_last_activity_storage():
     global last_activity_storage_message_id, last_activity
-    msg = await find_storage_message("ACTIVITY_DATA:")
-    if not msg:
-        return
-    last_activity_storage_message_id = msg.id
-    raw = msg.content[len("ACTIVITY_DATA:"):]
-    if not raw.strip():
+    last_activity_storage_message_id = None  
+
+    if db_pool is None:
         last_activity = {}
         return
-    try:
-        data = json.loads(raw)
-        last_activity = {}
-        for mid_str, ts in data.items():
-            try:
-                last_activity[int(mid_str)] = ts
-            except:
-                pass
-        await log_to_bot_channel(f"[ACTIVITY] Loaded last activity for {len(last_activity)} member(s).")
-    except Exception as e:
-        await log_to_bot_channel(f"init_last_activity_storage failed: {e}")
-        last_activity = {}
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT guild_id, member_id, last_seen FROM last_activity"
+        )
+
+    last_activity = {}
+    for row in rows:
+        gid = row["guild_id"]
+        mid = row["member_id"]
+        ts = row["last_seen"].isoformat() + "Z"
+        last_activity.setdefault(gid, {})[mid] = ts
+
+    total_members = sum(len(act) for act in last_activity.values())
+    await log_to_bot_channel(
+        f"[ACTIVITY] Loaded last activity for {total_members} member(s) across {len(last_activity)} guild(s) from Postgres."
+    )
 
 async def save_last_activity_storage():
-    global last_activity_storage_message_id
-    if STORAGE_CHANNEL_ID == 0 or last_activity_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        return
-    try:
-        msg = await ch.fetch_message(last_activity_storage_message_id)
-        payload = {str(k): v for k, v in last_activity.items()}
-        await msg.edit(content="ACTIVITY_DATA:" + json.dumps(payload))
-    except Exception as e:
-        await log_to_bot_channel(f"save_last_activity_storage failed: {e}")
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            for gid, members in last_activity.items():
+                for mid, ts_str in members.items():
+                    try:
+                        dt = datetime.fromisoformat(ts_str.replace("Z", ""))
+                    except Exception:
+                        continue
+                    await conn.execute(
+                        """
+                        INSERT INTO last_activity (guild_id, member_id, last_seen)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (guild_id, member_id) DO UPDATE SET
+                            last_seen = EXCLUDED.last_seen
+                        """,
+                        gid, mid, dt
+                    )
+
+activity_dirty = False
 
 async def touch_member_activity(member: discord.Member):
+    global activity_dirty
+
     if member.bot:
         return
+    guild_id = member.guild.id
+    if guild_id not in last_activity:
+        last_activity[guild_id] = {}
     now = discord.utils.utcnow().isoformat() + "Z"
-    last_activity[member.id] = now
-    await save_last_activity_storage()
-    if ACTIVE_ROLE_ID == 0:
+    last_activity[guild_id][member.id] = now
+    activity_dirty = True
+
+    cfg = await get_guild_config(member.guild)
+    active_role_id = cfg.get("active_role_id", 0)
+    if active_role_id == 0:
         return
-    role = member.guild.get_role(ACTIVE_ROLE_ID)
+    role = member.guild.get_role(active_role_id)
     if role and role not in member.roles:
         try:
             await member.add_roles(role, reason="Marked active by activity tracking")
-            await log_to_bot_channel(
-                f"[ACTIVITY] {member.mention} marked active and given active role in guild {member.guild.id}."
-            )
+            await log_to_guild_bot_channel(member.guild, f"[ACTIVITY] {member.mention} marked active and given active role.")
         except Exception as e:
             await log_exception("touch_member_activity_add_role", e)
+
+
+def find_role_by_name(guild: discord.Guild, name: str) -> discord.Role | None:
+    name_lower = name.lower()
+    for role in guild.roles:
+        if role.name.lower() == name_lower:
+            return role
+    return None
+
+
+async def clear_theme_roles(guild: discord.Guild) -> list[str]:
+    removed: list[str] = []
+    seasonal_names = set(THEME_CHRISTMAS_ROLES.keys()) | set(THEME_HALLOWEEN_ROLES.keys())
+
+    for role in guild.roles:
+        if role.name in seasonal_names:
+            for member in list(role.members):
+                try:
+                    await member.remove_roles(role, reason="Seasonal theme clear")
+                    if role.name not in removed:
+                        removed.append(role.name)
+                except Exception as e:
+                    await log_exception("clear_theme_roles", e)
+
+    return removed
+
+
+async def apply_theme_roles(guild: discord.Guild, mapping: dict[str, str]) -> list[str]:
+    added: list[str] = []
+
+    for seasonal_name, base_name in mapping.items():
+        base_role = find_role_by_name(guild, base_name)
+        if not base_role:
+            continue
+
+        seasonal_role = find_role_by_name(guild, seasonal_name)
+        if not seasonal_role:
+            try:
+                seasonal_role = await guild.create_role(
+                    name=seasonal_name,
+                    reason="Creating seasonal theme role",
+                )
+            except Exception as e:
+                await log_exception("apply_theme_roles_create", e)
+                continue
+
+        for member in list(base_role.members):
+            if seasonal_role not in member.roles:
+                try:
+                    await member.add_roles(seasonal_role, reason="Seasonal theme")
+                except Exception as e:
+                    await log_exception("apply_theme_roles_add", e)
+
+        added.append(seasonal_name)
+
+    return added
+
+
+async def apply_theme_icon(guild: discord.Guild, url: str | None):
+    if not url:
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    img_bytes = await resp.read()
+                    await guild.edit(icon=img_bytes, reason="Seasonal theme icon")
+    except Exception as e:
+        await log_exception("apply_theme_icon", e)
+
+async def clear_theme_emojis(guild: discord.Guild) -> list[str]:
+    names = set()
+    for items in THEME_EMOJI_CONFIG.values():
+        for entry in items:
+            name = entry.get("name")
+            if name:
+                names.add(name.lower())
+    removed = []
+    if not names:
+        return removed
+    for emoji in list(guild.emojis):
+        if emoji.name.lower() in names:
+            try:
+                await emoji.delete(reason="Seasonal theme emoji clear")
+                removed.append(emoji.name)
+            except Exception as e:
+                await log_exception("clear_theme_emojis", e)
+    return removed
+
+
+async def apply_theme_emojis(guild: discord.Guild, key: str) -> list[str]:
+    items = THEME_EMOJI_CONFIG.get(key) or []
+    added = []
+    if not items:
+        return added
+    existing = {e.name.lower() for e in guild.emojis}
+    async with aiohttp.ClientSession() as session:
+        for entry in items:
+            name = entry.get("name")
+            url = entry.get("url")
+            if not name or not url:
+                continue
+            if name.lower() in existing:
+                continue
+            try:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.read()
+                emoji = await guild.create_custom_emoji(name=name, image=data, reason="Seasonal theme emoji")
+                added.append(emoji.name)
+                existing.add(emoji.name.lower())
+            except Exception as e:
+                await log_exception("apply_theme_emojis", e)
+    return added
+
+async def apply_theme_for_today_with_mode(
+    guild: discord.Guild,
+    today: str | None = None,
+    mode: str = "auto",
+):
+    if today is None:
+        from datetime import datetime
+        today = datetime.utcnow().strftime("%m-%d")
+
+    removed_roles: list[str] = []
+    removed_emojis: list[str] = []
+    added_roles: list[str] = []
+    added_emojis: list[str] = []
+
+    if mode == "none":
+        removed_roles = await clear_theme_roles(guild)
+        removed_emojis = await clear_theme_emojis(guild)
+        await apply_theme_icon(guild, ICON_DEFAULT_URL)
+        await log_to_bot_channel(
+            f"[THEME] guild={guild.id} date={today} mode=none roles_cleared={removed_roles} emojis_cleared={removed_emojis}"
+        )
+        return "none", removed_roles, removed_emojis, added_roles, added_emojis
+
+    if mode == "halloween":
+        removed_roles = await clear_theme_roles(guild)
+        removed_emojis = await clear_theme_emojis(guild)
+        added_roles = await apply_theme_roles(guild, THEME_HALLOWEEN_ROLES)
+        added_emojis = await apply_theme_emojis(guild, "halloween")
+        await apply_theme_icon(guild, ICON_HALLOWEEN_URL or ICON_DEFAULT_URL)
+        await log_to_bot_channel(
+            f"[THEME] guild={guild.id} date={today} mode=halloween roles_cleared={removed_roles} emojis_cleared={removed_emojis} roles_added={added_roles} emojis_added={added_emojis}"
+        )
+        return "halloween", removed_roles, removed_emojis, added_roles, added_emojis
+
+    if mode == "christmas":
+        removed_roles = await clear_theme_roles(guild)
+        removed_emojis = await clear_theme_emojis(guild)
+        added_roles = await apply_theme_roles(guild, THEME_CHRISTMAS_ROLES)
+        added_emojis = await apply_theme_emojis(guild, "christmas")
+        await apply_theme_icon(guild, ICON_CHRISTMAS_URL or ICON_DEFAULT_URL)
+        await log_to_bot_channel(
+            f"[THEME] guild={guild.id} date={today} mode=christmas roles_cleared={removed_roles} emojis_cleared={removed_emojis} roles_added={added_roles} emojis_added={added_emojis}"
+        )
+        return "christmas", removed_roles, removed_emojis, added_roles, added_emojis
+
+    mode_auto, removed_roles, removed_emojis, added_roles, added_emojis = await apply_theme_for_today(guild, today)
+    return mode_auto, removed_roles, removed_emojis, added_roles, added_emojis
+
+async def apply_theme_for_today(guild: discord.Guild, mm_dd: str):
+    month_str, _ = mm_dd.split("-")
+    month = int(month_str)
+
+    if month == 10:
+        mode = "halloween"
+    elif month == 12:
+        mode = "christmas"
+    else:
+        mode = "none"
+
+    removed_roles = await clear_theme_roles(guild)
+    removed_emojis = await clear_theme_emojis(guild)
+    added_roles: list[str] = []
+    added_emojis: list[str] = []
+
+    if mode == "halloween":
+        added_roles = await apply_theme_roles(guild, THEME_HALLOWEEN_ROLES)
+        added_emojis = await apply_theme_emojis(guild, "halloween")
+        await apply_theme_icon(guild, ICON_HALLOWEEN_URL or ICON_DEFAULT_URL)
+    elif mode == "christmas":
+        added_roles = await apply_theme_roles(guild, THEME_CHRISTMAS_ROLES)
+        added_emojis = await apply_theme_emojis(guild, "christmas")
+        await apply_theme_icon(guild, ICON_CHRISTMAS_URL or ICON_DEFAULT_URL)
+    else:
+        await apply_theme_icon(guild, ICON_DEFAULT_URL)
+
+    await log_to_bot_channel(
+        f"[THEME] guild={guild.id} date={mm_dd} mode={mode} roles_cleared={removed_roles} emojis_cleared={removed_emojis} roles_added={added_roles} emojis_added={added_emojis}"
+    )
+
+    return mode, removed_roles, removed_emojis, added_roles, added_emojis
 
 
 ############### VIEWS / UI COMPONENTS ###############
@@ -1334,57 +2074,423 @@ class BasePrizeView(discord.ui.View):
             await interaction.message.delete()
         except Exception as e:
             await log_exception("BasePrizeView_claim_button_delete", e)
-        dead_role = guild.get_role(DEAD_CHAT_ROLE_ID)
+        cfg = await ensure_guild_config(guild)
+        dead_role_id = cfg.get("dead_chat_role_id", 0)
+        dead_role = guild.get_role(dead_role_id)
         role_mention = dead_role.mention if dead_role else "the Dead Chat role"
-        ch = guild.get_channel(WELCOME_CHANNEL_ID)
+        ch = await get_config_channel(guild, "prize_announce_channel_id") or await get_config_channel(guild, "welcome_channel_id")
+        text = cfg.get("prize_announce_text") or DEFAULT_PRIZE_ANNOUNCE_MESSAGE
         if ch:
-            msg = PRIZE_ANNOUNCE_MESSAGE.format(
-                emoji=PRIZE_EMOJI,
+            msg = text.format(
                 winner=interaction.user.mention,
                 gift=self.gift_title,
                 role=role_mention,
                 rarity=self.rarity
             )
             await ch.send(msg)
-        await log_to_bot_channel(
-            f"[PRIZE] {interaction.user.mention} claimed prize '{self.gift_title}' (rarity {self.rarity})."
-        )
-        claim_text = PRIZE_CLAIM_MESSAGE.format(gift=self.gift_title)
-        await interaction.response.send_message(claim_text, ephemeral=True)
+        await log_to_guild_bot_channel(guild, f"[PRIZE] {interaction.user.mention} claimed prize '{self.gift_title}' (rarity {self.rarity}).")
+        claim_text = cfg.get("prize_claim_text") or DEFAULT_PRIZE_CLAIM_MESSAGE
+        await interaction.response.send_message(claim_text.format(gift=self.gift_title), ephemeral=True)
 
-class MoviePrizeView(BasePrizeView):
-    gift_title = "Movie Request"
-    rarity = "Common"
-class NitroPrizeView(BasePrizeView):
-    gift_title = "Month of Nitro Basic"
-    rarity = "Uncommon"
-class SteamPrizeView(BasePrizeView):
-    gift_title = "Steam Gift Card"
-    rarity = "Rare"
+class PrizeView(BasePrizeView):
+    def __init__(self, gift_title: str, rarity: str):
+        super().__init__()
+        self.gift_title = gift_title
+        self.rarity = rarity
+
+class SetupPagerView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.active_page: str | None = None 
+
+    def make_home_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Admin Bot Setup",
+            description="Use the buttons below to view **Features** or the **Commands Checklist**.",
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Admin-only • /setup")
+        return embed
+
+    def make_features_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Admin Bot Features",
+            description="Overview of what this bot does for your server.",
+            color=discord.Color.blurple(),
+        )
+
+        embed.add_field(
+            name="Onboarding & Roles",
+            value=(
+                "• Welcome messages for new members\n"
+                "• Delayed member-join role\n"
+                "• Auto roles for new bots\n"
+                "• Birthday role + birthday announcements\n"
+                "• Public birthday list message (auto-updating)\n"
+                "• Optional Active Member role based on activity"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Birthdays & QOTD",
+            value=(
+                "• Members can register their birthdays\n"
+                "• Shared birthday list + refreshable public birthday message\n"
+                "• Daily Question of the Day from Google Sheets\n"
+                "• Optional QOTD ping role for people who want pings\n"
+                "• Admin controls for sending birthday/QOTD announcements"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Dead Chat, Plague & Prizes",
+            value=(
+                "• Dead Chat idle tracking & role steals\n"
+                "• Scheduled plague days with infection role\n"
+                "• Scheduled prize drops linked to Dead Chat\n"
+                "• Prize claim buttons with announcements\n"
+                "• Channel rescanning for accurate Dead Chat timestamps"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Activity, Cleanup & Sticky",
+            value=(
+                "• Tracks last activity per member\n"
+                "• Removes Active role after inactivity\n"
+                "• Auto-delete channels with ignore phrases\n"
+                "• Sticky messages that stay on top in a channel\n"
+                "• Mark members active manually when needed"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Twitch & Logging",
+            value=(
+                "• Watch multiple Twitch channels\n"
+                "• Live notifications with customizable text\n"
+                "• Member join/leave/ban/kick logs\n"
+                "• Bot join/leave/ban logs"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Voice & Seasonal Themes",
+            value=(
+                "• Voice-channel ↔ role links (VC join = get role)\n"
+                "• Automatic seasonal themes (Halloween / Christmas)\n"
+                "• Manual theme mode: auto / none / halloween / christmas"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Utility & Admin Tools",
+            value=(
+                "• Setup dashboard for admins (/setup)\n"
+                "• Send or edit messages as the bot\n"
+                "• Config viewers for both runtime and database state\n"
+                "• Database connection test\n"
+                "• Full setup checklist available in the setup UI"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="Use the buttons below to switch pages.")
+        return embed
+
+    def make_commands_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="Admin Bot Setup Checklist",
+            description="Run these commands to configure all features.",
+            color=discord.Color.blurple(),
+        )
+
+        embed.add_field(
+            name="SETUP",
+            value=(
+                "> `/setup` - Show the full Admin Bot setup checklist."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="CHANNELS",
+            value=(
+                "> `/welcome_channel` - Set the welcome channel.\n"
+                "> `/birthday_announce_channel` - Set birthday announcements.\n"
+                "> `/qotd_set_channel` - Choose the QOTD channel.\n"
+                "> `/deadchat_trigger_channels` - Add Dead Chat channels.\n"
+                "> `/prize_channel` - Set prize drop channel.\n"
+                "> `/prize_announce_channel` - Set prize announcement channel.\n"
+                "> `/log_channel_members` - Set member log channel.\n"
+                "> `/auto_delete_channel` - Add auto-delete channels."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="ROLES",
+            value=(
+                "> `/active_member_role` - Role for active members.\n"
+                "> `/active_member_role_add` - Mark a member active right now.\n"
+                "> `/birthday_role` - Role for birthdays.\n"
+                "> `/deadchat_role` - Dead Chat holder role.\n"
+                "> `/plague_role` - Plague infection role.\n"
+                "> `/member_join_role` - Auto-assign on member join.\n"
+                "> `/bot_join_role` - Auto-assign on bot join.\n"
+                "> `/qotd_ping_role` - Set or clear the optional QOTD ping role."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="BIRTHDAYS & QOTD",
+            value=(
+                "> `/birthday_set` - Members share their birthday.\n"
+                "> `/birthday_set_for` - Admin sets a member's birthday.\n"
+                "> `/birthday_remove` - Remove a member's birthday.\n"
+                "> `/birthday_list` - View server birthday list.\n"
+                "> `/birthday_public` - Create/refresh public birthday message.\n"
+                "> `/birthday_announce_send` - Manually send a birthday message.\n"
+                "> `/qotd_enable` - Enable daily QOTD.\n"
+                "> `/qotd_disable` - Disable daily QOTD.\n"
+                "> `/qotd_ping_role` - Set or clear the optional QOTD ping role."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="TEXT & MESSAGES",
+            value=(
+                "> `/birthday_msg` - Set birthday announcement text.\n"
+                "> `/twitch_msg` - Set Twitch alert text.\n"
+                "> `/plague_msg` - Set plague outbreak message.\n"
+                "> `/sticky_message` - Set or clear sticky messages.\n"
+                "> `/send_msg` - Make the bot send a message.\n"
+                "> `/edit_msg` - Edit a bot message."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="AUTO DELETE & ACTIVITY",
+            value=(
+                "> `/auto_delete_delay` - Set deletion delay for auto-delete channels.\n"
+                "> `/auto_delete_filters` - Add phrases that never get deleted.\n"
+                "> `/active_member_role_add` - Mark a member active right now."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="TWITCH",
+            value="> `/twitch_channel` - Add a Twitch channel and announcement target.",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="PRIZES, DEAD CHAT & PLAGUE",
+            value=(
+                "> `/prize_add` - Define a prize title + rarity.\n"
+                "> `/prize_day` - Schedule or instantly drop a prize.\n"
+                "> `/prize_list` - View scheduled prize drops.\n"
+                "> `/prize_delete` - Delete a scheduled prize.\n"
+                "> `/prize_announce_send` - Manually announce a prize winner.\n"
+                "> `/plague_day` - Schedule a plague day.\n"
+                "> `/deadchat_scan` - Rescan Dead Chat channels for last message."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="VOICE CHANNEL ROLES",
+            value=(
+                "> `/vc_role_link` - Link a voice channel to a role.\n"
+                "> `/vc_role_unlink` - Remove a VC → role link.\n"
+                "> `/vc_role_list` - List all VC role links."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="THEMES",
+            value=(
+                "> `/theme_enable` - Enable seasonal themes.\n"
+                "> `/theme_disable` - Disable seasonal themes.\n"
+                "> `/theme_mode` - Set mode: auto / none / halloween / christmas.\n"
+                "> `/theme_update` - Force-refresh today's theme now."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="CONFIG & DEBUG",
+            value=(
+                "> `/config_show` - Show the current config for this server.\n"
+                "> `/config_db_show` - Show raw DB config row.\n"
+                "> `/db_test` - Test connection to the Postgres database."
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="Use this checklist to finish setup for each server.")
+        return embed
+
+    def refresh_button_styles(self):
+        for child in self.children:
+            if not isinstance(child, discord.ui.Button):
+                continue
+            if child.custom_id == "setup_features":
+                child.style = (
+                    discord.ButtonStyle.primary
+                    if self.active_page == "features"
+                    else discord.ButtonStyle.secondary
+                )
+            elif child.custom_id == "setup_commands":
+                child.style = (
+                    discord.ButtonStyle.primary
+                    if self.active_page == "commands"
+                    else discord.ButtonStyle.secondary
+                )
+
+    @discord.ui.button(
+        label="Features",
+        style=discord.ButtonStyle.secondary,  
+        custom_id="setup_features",
+    )
+    async def features_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        self.active_page = "features"
+        self.refresh_button_styles()
+        embed = self.make_features_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(
+        label="Commands",
+        style=discord.ButtonStyle.secondary,  
+        custom_id="setup_commands",
+    )
+    async def commands_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        self.active_page = "commands"
+        self.refresh_button_styles()
+        embed = self.make_commands_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
 
 
 ############### AUTOCOMPLETE FUNCTIONS ###############
 
 
 ############### BACKGROUND TASKS & SCHEDULERS ###############
+async def qotd_scheduler():
+    """Posts the daily QOTD to every guild that has QOTD enabled."""
+    await bot.wait_until_ready()
+
+    TARGET_HOUR_UTC = 16  
+    TARGET_MINUTE = 0
+
+    already_ran = False
+
+    while not bot.is_closed():
+        now = datetime.utcnow()
+
+        if now.hour == TARGET_HOUR_UTC and now.minute == TARGET_MINUTE:
+            if not already_ran:
+                await post_daily_qotd()
+                already_ran = True
+        else:
+            already_ran = False
+
+        await asyncio.sleep(30)
+
+async def theme_scheduler():
+    await bot.wait_until_ready()
+    TARGET_HOUR_UTC = 9
+    TARGET_MINUTE = 0
+    while not bot.is_closed():
+        now = datetime.utcnow()
+        if now.hour == TARGET_HOUR_UTC and now.minute == TARGET_MINUTE:
+            today = now.strftime("%m-%d")
+            for guild in bot.guilds:
+                try:
+                    settings = await get_theme_settings(guild.id)
+                    if not settings["enabled"]:
+                        continue
+                    mode = settings["mode"]
+                    await apply_theme_for_today_with_mode(guild, today, mode)
+                except Exception as e:
+                    await log_exception(f"theme_scheduler_guild_{guild.id}", e)
+            await asyncio.sleep(61)
+        await asyncio.sleep(30)
+
+async def birthday_checker():
+    """Runs once a day and gives/removes the birthday role for each guild."""
+    await bot.wait_until_ready()
+
+    TARGET_HOUR_UTC = 15 
+    TARGET_MINUTE = 0
+
+    while not bot.is_closed():
+        now = datetime.utcnow()
+
+        if now.hour == TARGET_HOUR_UTC and now.minute == TARGET_MINUTE:
+            today = now.strftime("%m-%d")
+
+            for guild in bot.guilds:
+                try:
+                    cfg = await ensure_guild_config(guild)
+                    birthday_role_id = cfg.get("birthday_role_id")
+                    if not birthday_role_id:
+                        continue
+
+                    role = guild.get_role(birthday_role_id)
+                    if not role:
+                        continue
+
+                    birthdays = await get_guild_birthdays(guild.id)
+
+                    for member in guild.members:
+                        mm_dd = birthdays.get(str(member.id))
+
+                        if mm_dd == today:
+                            if role not in member.roles:
+                                await member.add_roles(role, reason="Birthday!")
+                        else:
+                            if role in member.roles:
+                                await member.remove_roles(role, reason="Birthday over")
+
+                except Exception as e:
+                    await log_exception(f"birthday_checker_guild_{guild.id}", e)
+
+            await asyncio.sleep(61)
+
+        await asyncio.sleep(30)
+
 async def twitch_watcher():
     await bot.wait_until_ready()
-    if not WELCOME_CHANNEL_ID or not TWITCH_CHANNELS:
-        return
-    ch = bot.get_channel(WELCOME_CHANNEL_ID)
-    if not ch:
+    if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
         return
     while not bot.is_closed():
         try:
             streams = await fetch_twitch_streams()
-            for name in TWITCH_CHANNELS:
+            for name in all_twitch_channels:
                 is_live = name in streams
                 was_live = twitch_live_state.get(name, False)
                 if is_live and not was_live:
-                    msg = TWITCH_LIVE_MESSAGE.format(name=name)
-                    await ch.send(msg)
                     twitch_live_state[name] = True
                     await save_twitch_state()
+                    for guild in bot.guilds:
+                        cfg = await ensure_guild_config(guild)
+                        text = cfg.get("twitch_live_text") or DEFAULT_TWITCH_LIVE_MESSAGE
+                        for tc in cfg.get("twitch_configs", []):
+                            if tc["username"].lower() == name:
+                                ch = guild.get_channel(tc["announce_channel_id"])
+                                if ch:
+                                    await ch.send(text.format(name=name))
                     await log_to_bot_channel(f"[TWITCH] {name} went LIVE.")
                 elif not is_live and was_live:
                     twitch_live_state[name] = False
@@ -1396,42 +2502,40 @@ async def twitch_watcher():
 
 async def infected_watcher():
     await bot.wait_until_ready()
-    if INFECTED_ROLE_ID == 0:
-        return
     while not bot.is_closed():
         try:
             now = datetime.utcnow()
-            expired_ids = []
-            for mid, ts in list(infected_members.items()):
-                try:
-                    expires = datetime.fromisoformat(ts.replace("Z", ""))
-                except:
-                    continue
-                if now >= expires:
-                    expired_ids.append(mid)
-            if expired_ids:
-                cleared_mentions = []
-                for guild in bot.guilds:
-                    role = guild.get_role(INFECTED_ROLE_ID)
-                    if not role:
+            for guild in bot.guilds:
+                cfg = await ensure_guild_config(guild)
+                infected = cfg.get("infected_members", {})
+                expired_ids = []
+                for mid, ts in infected.items():
+                    try:
+                        expires = datetime.fromisoformat(ts.replace("Z", ""))
+                        if now >= expires:
+                            expired_ids.append(mid)
+                    except:
                         continue
-                    for mid in expired_ids:
-                        member = guild.get_member(mid)
-                        if member and role in member.roles:
-                            try:
-                                await member.remove_roles(role, reason="Plague expired")
-                                cleared_mentions.append(member.mention)
-                            except:
-                                pass
-                for mid in expired_ids:
-                    infected_members.pop(mid, None)
-                await save_plague_storage()
-                if cleared_mentions:
-                    await log_to_bot_channel(f"[PLAGUE] Cleared infected role for: {', '.join(cleared_mentions)}")
-                else:
-                    await log_to_bot_channel(
-                        f"[PLAGUE] Cleared infected role for: {', '.join(f'<@{i}>' for i in expired_ids)}"
-                    )
+                if expired_ids:
+                    cleared_mentions = []
+                    role_id = cfg.get("infected_role_id", 0)
+                    role = guild.get_role(role_id)
+                    if role:
+                        for mid in expired_ids:
+                            member = guild.get_member(mid)
+                            if member and role in member.roles:
+                                try:
+                                    await member.remove_roles(role, reason="Plague expired")
+                                    cleared_mentions.append(member.mention)
+                                except:
+                                    pass
+                    new_infected = {k: v for k, v in infected.items() if k not in expired_ids}
+                    cfg["infected_members"] = new_infected
+                    await save_guild_config_db(guild, cfg)
+                    if cleared_mentions:
+                        await log_to_guild_bot_channel(guild, f"[PLAGUE] Cleared infected role for: {', '.join(cleared_mentions)}")
+                    else:
+                        await log_to_guild_bot_channel(guild, f"[PLAGUE] Cleared infected role for: {', '.join(f'<@{i}>' for i in expired_ids)}")
         except Exception as e:
             await log_exception("infected_watcher", e)
         await asyncio.sleep(3600)
@@ -1453,32 +2557,36 @@ async def member_join_watcher():
                     assign_at = datetime.fromisoformat(assign_at_str.replace("Z", ""))
                 except:
                     continue
+
                 if now >= assign_at:
                     guild = bot.get_guild(guild_id)
                     if not guild:
-                        continue
-                    cfg = await get_guild_config(guild)
-                    member_role_id = cfg.get("member_join_role_id", MEMBER_JOIN_ROLE_ID) if cfg else MEMBER_JOIN_ROLE_ID
+                        remaining.append(entry); continue
+
+                    cfg = await ensure_guild_config(guild)
+                    member_role_id = cfg.get("member_join_role_id", 0)
                     if not member_role_id:
-                        continue
+                        remaining.append(entry); continue
+
                     member = guild.get_member(member_id)
                     if not member:
-                        continue
+                        remaining.append(entry); continue
+
                     role = guild.get_role(member_role_id)
                     if not role:
-                        continue
+                        remaining.append(entry); continue
+
                     if role not in member.roles:
                         try:
                             await member.add_roles(role, reason="Delayed member join role")
-                            await log_to_bot_channel(
-                                f"[MEMBERJOIN] Applied member role to {member.mention} in guild {guild.id}."
-                            )
+                            await log_to_guild_bot_channel(guild, f"[MEMBERJOIN] Applied member role to {member.mention}.")
                         except:
                             pass
-                    await touch_member_activity(member)
+
                     changed = True
                 else:
                     remaining.append(entry)
+
             if changed or len(remaining) != len(pending_member_joins):
                 pending_member_joins[:] = remaining
                 await save_member_join_storage()
@@ -1493,27 +2601,28 @@ async def activity_inactive_watcher():
         try:
             now = discord.utils.utcnow()
             cutoff = now - timedelta(days=INACTIVE_DAYS_THRESHOLD)
-            inactive_ids = set()
-            for mid, ts in list(last_activity.items()):
-                try:
-                    dt = datetime.fromisoformat(ts.replace("Z", ""))
-                except:
-                    continue
-                if dt < cutoff:
-                    inactive_ids.add(mid)
             for guild in bot.guilds:
-                cfg = await get_guild_config(guild)
-                active_role_id = cfg.get("active_role_id", ACTIVE_ROLE_ID) if cfg else ACTIVE_ROLE_ID
+                cfg = await ensure_guild_config(guild)
+                active_role_id = cfg.get("active_role_id", 0)
                 if not active_role_id:
                     continue
                 role = guild.get_role(active_role_id)
                 if not role:
                     continue
+                guild_activity = last_activity.get(guild.id, {})
+                inactive_ids = set()
+                for mid, ts in guild_activity.items():
+                    try:
+                        dt = datetime.fromisoformat(ts.replace("Z", ""))
+                    except:
+                        continue
+                    if dt < cutoff:
+                        inactive_ids.add(mid)
                 for member in list(role.members):
-                    if member.id in inactive_ids or member.id not in last_activity:
+                    if member.id in inactive_ids or member.id not in guild_activity:
                         try:
                             await member.remove_roles(role, reason="Marked inactive by activity tracking")
-                            await log_to_bot_channel(f"{member.mention} is officially inactive @everyone")
+                            await log_to_guild_bot_channel(guild, f"{member.mention} is officially inactive")
                         except Exception as e:
                             await log_exception("activity_inactive_watcher_remove_role", e)
         except Exception as e:
@@ -1522,53 +2631,58 @@ async def activity_inactive_watcher():
 
 
 ############### EVENT HANDLERS ###############
+tasks_started = False
+
 @bot.event
 async def on_ready():
-    print(f"{bot.user} is online!")
+    global tasks_started
     await init_db()
+
+    print(f"{bot.user} is online!")
+    print(f"Logged in as {bot.user}")
+
+    if tasks_started:
+        return
+    tasks_started = True
+
     await run_all_inits_with_logging()
+    await initialize_dead_chat()
 
-    global startup_logging_done, startup_log_buffer
+    for guild in bot.guilds:
+        cfg = await ensure_guild_config(guild)
+        plague_scheduled[guild.id] = cfg.get("plague_scheduled", [])
+        infected_members[guild.id] = cfg.get("infected_members", {})
+        prize_defs[guild.id] = cfg.get("prize_defs", {})
+        scheduled_prizes[guild.id] = cfg.get("prize_scheduled", [])
+        for tc in cfg.get("twitch_configs", []):
+            all_twitch_channels.add(tc["username"].lower())
 
-    await init_last_activity_storage()
-
+    bot.loop.create_task(qotd_scheduler())
+    bot.loop.create_task(theme_scheduler())
+    bot.loop.create_task(birthday_checker())
     bot.loop.create_task(twitch_watcher())
     bot.loop.create_task(infected_watcher())
     bot.loop.create_task(member_join_watcher())
     bot.loop.create_task(activity_inactive_watcher())
-
-    await log_to_bot_channel("[TWITCH] watcher started.")
-    await log_to_bot_channel("[PLAGUE] infected_watcher started.")
-    await log_to_bot_channel("[MEMBERJOIN] watcher started.")
-    await log_to_bot_channel("[ACTIVITY] activity_inactive_watcher started.")
-
-    await log_to_bot_channel(f"Bot ready as {bot.user} in {len(bot.guilds)} guild(s).")
-
-    await flush_startup_logs()
-
-    startup_logging_done = True
-    startup_log_buffer = []
-
-    if sticky_storage_message_id is None:
-        print("STORAGE NOT INITIALIZED — Run /sticky_init, /prize_init and /deadchat_init")
-    else:
-        await initialize_dead_chat()
+    bot.loop.create_task(activity_flush_watcher())
+    bot.loop.create_task(deadchat_flush_watcher())
+    bot.loop.create_task(activity_flush_watcher())
+    bot.loop.create_task(deadchat_flush_watcher())
 
 @bot.event
 async def on_member_update(before, after):
-    cfg = await get_guild_config(after.guild)
-    ch = await get_config_channel(after.guild, "welcome_channel_id") if cfg else bot.get_channel(WELCOME_CHANNEL_ID)
+    guild = after.guild
+    cfg = await ensure_guild_config(guild)
+    ch = await get_config_channel(guild, "birthday_announce_channel_id") or await get_config_channel(guild, "welcome_channel_id")
     if not ch:
         return
-    birthday_role_id = cfg.get("birthday_role_id", BIRTHDAY_ROLE_ID) if cfg else BIRTHDAY_ROLE_ID
+    birthday_role_id = cfg.get("birthday_role_id", 0)
     new_roles = set(after.roles) - set(before.roles)
     for role in new_roles:
         if role.id == birthday_role_id:
-            if BIRTHDAY_TEXT:
-                await ch.send(BIRTHDAY_TEXT.replace("{mention}", after.mention))
-                await log_to_bot_channel(
-                    f"[BIRTHDAY] Birthday role granted and message sent for {after.mention}."
-                )
+            text = cfg.get("birthday_text") or DEFAULT_BIRTHDAY_TEXT
+            await ch.send(text.replace("{mention}", after.mention))
+            await log_to_guild_bot_channel(guild, f"[BIRTHDAY] Birthday role granted and message sent for {after.mention}.")
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -1589,49 +2703,104 @@ async def on_message(message: discord.Message):
         new_msg = await message.channel.send(sticky_texts[message.channel.id])
         sticky_messages[message.channel.id] = new_msg.id
         await save_stickies()
-    cfg = await get_guild_config(message.guild)
-    auto_ids = cfg.get("auto_delete_channel_ids", AUTO_DELETE_CHANNEL_IDS) if cfg else AUTO_DELETE_CHANNEL_IDS
+    guild = message.guild
+    cfg = await ensure_guild_config(guild)
+    auto_ids = cfg.get("auto_delete_channel_ids", [])
     if message.channel.id in auto_ids:
-        content = message.content.lower()
-        if not ("happy birthday" in content or "happy bday" in content or "happy b-day" in content or "happy belated bday" in content or "happy belated b-day" in content or "happy belated birthday" in content):
+        content_lower = message.content.lower()
+        ignore_phrases = cfg.get("auto_delete_ignore_phrases") or []
+        if not any(phrase.lower() in content_lower for phrase in ignore_phrases):
+            delay = cfg.get("auto_delete_delay_seconds", DELETE_DELAY_SECONDS)
+
             async def delete_later():
-                await asyncio.sleep(DELETE_DELAY_SECONDS)
+                await asyncio.sleep(delay)
                 try:
                     await message.delete()
-                    await log_to_bot_channel(
-                        f"[AUTO-DELETE] Message {message.id} in <#{message.channel.id}> deleted after {DELETE_DELAY_SECONDS} seconds."
+                    await log_to_guild_bot_channel(
+                        guild,
+                        f"[AUTO-DELETE] Message {message.id} in <#{message.channel.id}> deleted after {delay} seconds."
                     )
                 except Exception as e:
                     await log_exception("auto_delete_delete_later", e)
+
             bot.loop.create_task(delete_later())
+
+    await bot.process_commands(message)
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    """
+    VC Role System:
+    - When a member joins a linked VC, they get the configured role.
+    - When they leave / move away from that VC, the role is removed.
+    - Supports multiple VC→role links per guild.
+    """
+    guild = member.guild
+    if guild is None:
+        return
+    if member.bot:
+        return
+
+    links = await get_guild_vc_links(guild.id)
+    if not links:
+        return
+
+    for channel_id, role_id in links.items():
+        role = guild.get_role(role_id)
+        if not role:
+            continue
+
+        in_this_vc = after.channel is not None and after.channel.id == channel_id
+        has_role = role in member.roles
+
+        if in_this_vc and not has_role:
+            try:
+                await member.add_roles(role, reason="VC role link - joined voice channel")
+                await log_to_guild_bot_channel(
+                    guild,
+                    f"[VC-ROLE] Gave {role.mention} to {member.mention} for joining <#{channel_id}>."
+                )
+            except Exception as e:
+                await log_exception("on_voice_state_update_add_vc_role", e)
+
+        elif not in_this_vc and has_role:
+            try:
+                await member.remove_roles(role, reason="VC role link - left voice channel")
+                await log_to_guild_bot_channel(
+                    guild,
+                    f"[VC-ROLE] Removed {role.mention} from {member.mention} (no longer in <#{channel_id}>)."
+                )
+            except Exception as e:
+                await log_exception("on_voice_state_update_remove_vc_role", e)
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    cfg = await get_guild_config(member.guild)
-    ch = await get_config_channel(member.guild, "welcome_channel_id") if cfg else bot.get_channel(WELCOME_CHANNEL_ID)
+    guild = member.guild
+    cfg = await ensure_guild_config(guild)
+    ch = await get_config_channel(guild, "welcome_channel_id")
 
     if member.bot:
-        bot_role_id = cfg.get("bot_join_role_id", BOT_JOIN_ROLE_ID) if cfg else BOT_JOIN_ROLE_ID
-        bot_role = member.guild.get_role(bot_role_id) if bot_role_id else None
+        bot_role_id = cfg.get("bot_join_role_id", 0)
+        bot_role = guild.get_role(bot_role_id)
         if bot_role:
             try:
                 await member.add_roles(bot_role)
             except Exception as e:
-                await log_to_bot_channel(f"[WARN] Could not assign bot role to {member.mention}: {e}")
+                await log_to_guild_bot_channel(guild, f"[WARN] Could not assign bot role to {member.mention}: {e}")
         return
 
     if ch:
         try:
             await ch.send(f"Welcome {member.mention}!")
         except Exception as e:
-            await log_to_bot_channel(f"[ERROR] Could not send welcome for joiner {member.mention}: {e}")
+            await log_to_guild_bot_channel(guild, f"[ERROR] Could not send welcome for joiner {member.mention}: {e}")
 
-    member_role_id = cfg.get("member_join_role_id", MEMBER_JOIN_ROLE_ID) if cfg else MEMBER_JOIN_ROLE_ID
+    member_role_id = cfg.get("member_join_role_id", 0)
     if member_role_id:
         assign_at = (discord.utils.utcnow() + timedelta(seconds=180)).isoformat() + "Z"
         pending_member_joins.append(
             {
-                "guild_id": member.guild.id,
+                "guild_id": guild.id,
                 "member_id": member.id,
                 "assign_at": assign_at,
             }
@@ -1647,36 +2816,49 @@ async def on_member_ban(guild, user):
             break
     text = f"{user.mention} was banned by {moderator.mention if moderator else 'Unknown'}"
     if user.bot:
-        await log_to_bot_channel(text)
+        await log_to_guild_bot_channel(guild, text)
     else:
-        await log_to_thread(text)
+        await log_to_guild_mod_log(guild, text)
 
 @bot.event
 async def on_member_remove(member: discord.Member):
+    guild = member.guild
     now = discord.utils.utcnow()
-    async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.ban):
+    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.ban):
         if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 10:
             return
     kicked = False
     moderator = None
-    async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
+    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
         if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 10:
             moderator = entry.user
             kicked = True
             break
-    log_fn = log_to_bot_channel if member.bot else log_to_thread
     if kicked:
-        await log_fn(f"{member.mention} was kicked by {moderator.mention if moderator else 'Unknown'}")
+        text = f"{member.mention} was kicked by {moderator.mention if moderator else 'Unknown'}"
     else:
-        await log_fn(f"{member.mention} has left the server")
+        text = f"{member.mention} has left the server"
+    if member.bot:
+        await log_to_guild_bot_channel(guild, text)
+    else:
+        await log_to_guild_mod_log(guild, text)
 
 @bot.event
 async def on_application_command_error(ctx, error):
-    await log_exception("application_command_error", error)
+    tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    print("[SLASH ERROR]", repr(error))
+    print(tb)
+
     try:
-        await ctx.respond("An internal error occurred.", ephemeral=True)
-    except:
-        pass
+        await ctx.respond(f"An internal error occurred.\n```{repr(error)}```", ephemeral=True)
+    except Exception:
+        try:
+            if hasattr(ctx, "response") and not ctx.response.is_done():
+                await ctx.response.send_message(f"An internal error occurred.\n```{repr(error)}```", ephemeral=True)
+            elif hasattr(ctx, "followup"):
+                await ctx.followup.send(f"An internal error occurred.\n```{repr(error)}```", ephemeral=True)
+        except Exception:
+            pass
 
 @bot.event
 async def on_error(event, *args, **kwargs):
@@ -1688,7 +2870,83 @@ async def on_error(event, *args, **kwargs):
 
 
 ############### COMMAND GROUPS ###############
-@bot.slash_command(name="db_test", description="Test Postgres connectivity")
+TEST_GUILD_ID = 123456789012345678 
+TEST_CHANNEL_ID = None  
+
+class FakeCtx:
+    """
+    Minimal stand-in for ApplicationContext so we can call slash command
+    functions without consuming the /test_all interaction response.
+    """
+    def __init__(self, *, bot, guild, author, channel):
+        self.bot = bot
+        self.guild = guild
+        self.author = author
+        self.channel = channel
+
+    async def respond(self, content=None, *, ephemeral=False, **kwargs):
+        if content:
+            return await self.channel.send(content)
+
+    async def send(self, content=None, **kwargs):
+        if content:
+            return await self.channel.send(content)
+
+
+@bot.slash_command(name="test_all", description="TEST SERVER ONLY: run every command.")
+async def test_all(ctx):
+    if not ctx.guild or ctx.guild.id != TEST_GUILD_ID:
+        return await ctx.respond("This is restricted to the test server.", ephemeral=True)
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    out_ch = bot.get_channel(TEST_CHANNEL_ID) if TEST_CHANNEL_ID else ctx.channel
+
+    text_ch = out_ch
+    voice_ch = next((c for c in ctx.guild.voice_channels if c.permissions_for(ctx.guild.me).view_channel), None)
+    role = next((r for r in ctx.guild.roles if r.name != "@everyone"), None)
+
+    fctx = FakeCtx(bot=bot, guild=ctx.guild, author=ctx.author, channel=out_ch)
+
+    await ctx.respond("Running `/test_all`… posting results in this channel.", ephemeral=True)
+
+    results = []
+
+    async def run_step(name, coro):
+        try:
+            await coro
+            results.append(f"✅ {name}")
+        except Exception as e:
+            results.append(f"❌ {name}: {type(e).__name__}: {e}")
+
+    await run_step("birthday_public", birthday_public(fctx))
+    await run_step("birthday_list", birthday_list(fctx))
+
+    await run_step("birthday_set", birthday_set(fctx, month="January", day=1))
+    await run_step("birthday_set_for", birthday_set_for(fctx, member=ctx.author, month="January", day=2))
+
+    await run_step("birthday_announce_send", birthday_announce(fctx, member=ctx.author))
+    await run_step("prize_announce_send", prize_announce(fctx, member=ctx.author, prize="Test Prize"))
+
+    await run_step("qotd_enable", qotd_enable(fctx))
+    await run_step("qotd_channel", qotd_set_channel(fctx, channel=text_ch))
+    if role:
+        await run_step("qotd_ping_role", qotd_ping_role(fctx, action="set", role=role))
+    await run_step("qotd_disable", qotd_disable(fctx))
+
+    if voice_ch and role:
+        await run_step("vc_role_link", vc_role_link(fctx, channel=voice_ch, role=role))
+        await run_step("vc_role_list", vc_role_list(fctx))
+        await run_step("vc_role_unlink", vc_role_unlink(fctx, channel=voice_ch))
+    else:
+        results.append("⚠️ vc_role_* skipped (no voice channel or no role found)")
+
+    report = "\n".join(results)
+    if len(report) > 1900:
+        report = report[:1900] + "\n...[truncated]"
+    await out_ch.send(f"```diff\n{report}\n```")
+    
+@bot.slash_command(name="db_test", description="Test the bot's connection to the Postgres database.")
 async def db_test(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
@@ -1701,72 +2959,37 @@ async def db_test(ctx):
         return await ctx.respond(f"DB error: {e}", ephemeral=True)
     await ctx.respond(f"DB OK, SELECT 1 returned: {value}", ephemeral=True)
 
+
 async def _update_guild_config(ctx, updates: dict, summary_label: str):
     if not ctx.author.guild_permissions.administrator:
         await ctx.respond("Admin only.", ephemeral=True)
         return None
+
     cfg = await ensure_guild_config(ctx.guild)
     cfg.update(updates)
+
     global guild_configs
     guild_configs[ctx.guild.id] = cfg
-    await save_guild_config_storage()
+
     await save_guild_config_db(ctx.guild, cfg)
-    await log_to_bot_channel(
-        f"[CONFIG] {ctx.author.mention} updated {summary_label} for guild {ctx.guild.id}."
-    )
+    await log_to_guild_bot_channel(ctx.guild, f"[CONFIG] {ctx.author.mention} updated {summary_label}.")
+    if "twitch_configs" in updates:
+        for tc in cfg.get("twitch_configs", []):
+            all_twitch_channels.add(tc["username"].lower())
     return cfg
 
-@bot.slash_command(name="storage_debug", description="Show storage message IDs for all systems")
-async def storage_debug(
-    ctx,
-):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    lines = [
-        f"STORAGE_CHANNEL_ID: {STORAGE_CHANNEL_ID}",
-        f"sticky_storage_message_id: {sticky_storage_message_id}",
-        f"member_join_storage_message_id: {member_join_storage_message_id}",
-        f"plague_storage_message_id: {plague_storage_message_id}",
-        f"deadchat_storage_message_id: {deadchat_storage_message_id}",
-        f"deadchat_state_storage_message_id: {deadchat_state_storage_message_id}",
-        f"movie_prize_storage_message_id: {movie_prize_storage_message_id}",
-        f"nitro_prize_storage_message_id: {nitro_prize_storage_message_id}",
-        f"steam_prize_storage_message_id: {steam_prize_storage_message_id}",
-        f"twitch_state_storage_message_id: {twitch_state_storage_message_id}",
-    ]
-    await ctx.respond("Storage debug:\n" + "\n".join(lines), ephemeral=True)
 
-@bot.slash_command(name="storage_scan", description="Show what the bot sees in the storage channel")
-async def storage_scan(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    text = await debug_scan_storage_channel()
-    if len(text) > 1900:
-        text = text[:1900] + "\n...[truncated]"
-    await ctx.respond(f"```{text}```", ephemeral=True)
-
-@bot.slash_command(name="storage_refresh", description="Rescan storage channel and reload storage message IDs")
-async def storage_refresh(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    await ctx.defer(ephemeral=True)
-    try:
-        await run_all_inits_with_logging()
-        await ctx.followup.send("Storage reload complete. Run /storage_debug to verify.", ephemeral=True)
-    except Exception as e:
-        await log_exception("storage_refresh", e)
-        try:
-            await ctx.followup.send(f"storage_refresh error: {e}", ephemeral=True)
-        except:
-            pass
-
-@bot.slash_command(name="deadchat_rescan", description="Force-scan all dead-chat channels for latest message timestamps")
+@bot.slash_command(
+    name="deadchat_scan",
+    description="Scan Dead Chat channels and refresh idle timestamps."
+)
 async def deadchat_rescan(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
     count = 0
     async with ctx.typing():
-        for channel_id in DEAD_CHAT_CHANNEL_IDS:
+        cfg = await get_guild_config(ctx.guild)
+        for channel_id in cfg.get("dead_chat_channel_ids", []):
             channel = bot.get_channel(channel_id)
             if not channel or not isinstance(channel, discord.TextChannel):
                 continue
@@ -1780,116 +3003,16 @@ async def deadchat_rescan(ctx):
             except Exception as e:
                 await log_exception("deadchat_rescan_history", e)
         await save_deadchat_storage()
-    await ctx.respond(f"Rescan complete — found latest message in {count}/{len(DEAD_CHAT_CHANNEL_IDS)} dead-chat channels and saved timestamps.", ephemeral=True)
+    await ctx.respond(
+        f"Rescan complete — found latest message in {count} dead-chat channels and saved timestamps.",
+        ephemeral=True
+    )
 
-@bot.slash_command(name="memberjoin_init", description="Create member-join storage message")
-async def memberjoin_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("MEMBERJOIN_DATA:[]")
-    global member_join_storage_message_id
-    member_join_storage_message_id = msg.id
-    await ctx.respond(f"Member join storage created: {msg.id}", ephemeral=True)
 
-@bot.slash_command(name="activity_init", description="Create last-activity storage message")
-async def activity_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("ACTIVITY_DATA:{}")
-    global last_activity_storage_message_id
-    last_activity_storage_message_id = msg.id
-    await save_last_activity_storage()
-    await ctx.respond(f"Activity storage message created: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="deadchat_state_init", description="Create DEADCHAT_STATE storage message")
-async def deadchat_state_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("DEADCHAT_STATE:{\"current_holder\":null,\"last_win_times\":{},\"notice_msg_ids\":{}}")
-    global deadchat_state_storage_message_id
-    deadchat_state_storage_message_id = msg.id
-    await save_deadchat_state()
-    await ctx.respond(f"Created DEADCHAT_STATE message: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="twitch_state_init", description="Create TWITCH_STATE storage message")
-async def twitch_state_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("TWITCH_STATE:{}")
-    global twitch_state_storage_message_id
-    twitch_state_storage_message_id = msg.id
-    await save_twitch_state()
-    await ctx.respond(f"Created TWITCH_STATE message: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="prize_init", description="Manually create prize storage messages")
-async def prize_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Storage channel invalid.", ephemeral=True)
-    movie_msg = await ch.send("PRIZE_MOVIE_DATA:[]")
-    nitro_msg = await ch.send("PRIZE_NITRO_DATA:[]")
-    steam_msg = await ch.send("PRIZE_STEAM_DATA:[]")
-    global movie_prize_storage_message_id, nitro_prize_storage_message_id, steam_prize_storage_message_id
-    movie_prize_storage_message_id = movie_msg.id
-    nitro_prize_storage_message_id = nitro_msg.id
-    steam_prize_storage_message_id = steam_msg.id
-    await save_prize_storage()
-    await ctx.respond(f"Prize storage messages created:\nMovie: {movie_msg.id}\nNitro: {nitro_msg.id}\nSteam: {steam_msg.id}", ephemeral=True)
-
-@bot.slash_command(name="sticky_init", description="Manually create sticky storage message")
-async def sticky_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Storage channel invalid.", ephemeral=True)
-    msg = await ch.send("STICKY_DATA:{}")
-    global sticky_storage_message_id
-    sticky_storage_message_id = msg.id
-    await save_stickies()
-    await ctx.respond(f"Sticky storage message created: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="deadchat_init", description="Manually create deadchat storage message")
-async def deadchat_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Storage channel invalid.", ephemeral=True)
-    msg = await ch.send("DEADCHAT_DATA:{}")
-    global deadchat_storage_message_id
-    deadchat_storage_message_id = msg.id
-    await save_deadchat_storage()
-    await ctx.respond(f"Deadchat storage message created: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="config_init", description="Create guild config storage message")
-async def config_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("CONFIG_DATA:{}")
-    global guild_config_storage_message_id
-    guild_config_storage_message_id = msg.id
-    await save_guild_config_storage()
-    await ctx.respond(f"Guild config storage message created: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="config_show", description="Show this server's Admin Bot config")
+@bot.slash_command(
+    name="config_show",
+    description="Show the current configuration for this server."
+)
 async def config_show(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
@@ -1899,7 +3022,11 @@ async def config_show(ctx):
         text = text[:1900] + "\n...[truncated]"
     await ctx.respond(f"```json\n{text}\n```", ephemeral=True)
 
-@bot.slash_command(name="config_db_show", description="Show this server's Admin Bot config from the database")
+
+@bot.slash_command(
+    name="config_db_show",
+    description="Show the raw database configuration for this server."
+)
 async def config_db_show(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
@@ -1925,101 +3052,422 @@ async def config_db_show(ctx):
         text = text[:1900] + "\n...[truncated]"
     await ctx.respond(f"```json\n{text}\n```", ephemeral=True)
 
+
 @bot.slash_command(
     name="setup",
-    description="Show Admin Bot setup commands for this server"
+    description="Show the full Admin Bot setup checklist."
 )
 async def setup(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
 
-    text = """
-SETUP COMMANDS:
-/add_channel_welcome
-/add_channel_birthday_announcement
-/add_channel_twitch_announcement
-/add_channel_dead_chat_triggers
-/add_channel_prize_announcement
-/add_channel_member_log
-/add_channel_bot_log
-/add_channel_prize_drop
-/add_channel_auto_delete
-  - What triggers deletion
-  - Ignore words / phrases
+    view = SetupPagerView()
+    view.refresh_button_styles()
+    embed = view.make_home_embed()
 
-/add_role_active
-/add_role_birthday
-/add_role_dead_chat
-/add_role_infected
-/add_role_member_join
-/add_role_bot_join
+    await ctx.respond(embed=embed, view=view, ephemeral=True)
 
-/add_text_birthday
-/add_text_twitch
-/add_text_plague
-
-/add_twitch_notification
-  - Twitch channel (login)
-  - Notification channel
-
-/add_prize
-  - Create a prize title
-  - Create drop rate text
-
-OPTIONAL FEATURES:
-Welcome messages
-Birthdays
-Twitch features
-Prize features
-Dead Chat / Infected roles
-Join roles
-Auto-delete channels
-""".strip("\n")
-
-    await ctx.respond(f"```txt\n{text}\n```", ephemeral=True)
 
 @bot.slash_command(
-    name="add_channel_auto_delete",
-    description="Mark this channel as an auto-delete channel for this server"
+    name="birthday_announce_send",
+    description="Manually send a birthday message for a member."
 )
-async def add_channel_auto_delete(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-
-    cfg = await ensure_guild_config(ctx.guild)
-    current = cfg.get("auto_delete_channel_ids") or []
-    if ctx.channel.id in current:
-        return await ctx.respond("This channel is already configured for auto-delete.", ephemeral=True)
-
-    new_ids = current + [ctx.channel.id]
-    updated_cfg = await _update_guild_config(
-        ctx,
-        {"auto_delete_channel_ids": new_ids},
-        "auto_delete_channel_ids"
-    )
-    if updated_cfg is None:
-        return
-
-    await ctx.respond(f"{ctx.channel.mention} added to auto-delete channels.", ephemeral=True)
-
-@bot.slash_command(name="say", description="Make the bot say something right here")
-async def say(ctx, message: discord.Option(str, "Message to send", required=True)):
+async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member", required=True)):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("You need Administrator.", ephemeral=True)
-    await ctx.channel.send(message.replace("\\n", "\n"))
-    await ctx.respond("Sent!", ephemeral=True)
+    guild = ctx.guild
+    cfg = await ensure_guild_config(guild)
+    ch = await get_config_channel(guild, "birthday_announce_channel_id") or await get_config_channel(
+        guild, "welcome_channel_id"
+    )
+    if not ch:
+        return await ctx.respond("Announce channel not found.", ephemeral=True)
+    text = (cfg.get("birthday_text") or DEFAULT_BIRTHDAY_TEXT)
+    msg = text.replace("{mention}", member.mention)
+    await ch.send(msg)
+    await log_to_guild_bot_channel(guild, f"[BIRTHDAY] Manual birthday announce sent for {member.mention} by {ctx.author.mention}.")
+    await ctx.respond(f"Sent birthday message for {member.mention}.", ephemeral=True)
 
-@bot.slash_command(name="editbotmsg", description="Edit a bot message in this channel with up to 4 lines")
-async def editbotmsg(
+@bot.slash_command(name="send_msg", description="Send a custom message as the bot in this channel")
+async def send_msg(
     ctx,
-    message_id: discord.Option(str, "Message ID", required=True),
+    message: discord.Option(str, "Message to send (use \\n for new lines)", required=True),
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("You need Administrator.", ephemeral=True)
+    try:
+        await ctx.channel.send(message.replace("\\n", "\n"))
+        await ctx.respond("Message sent.", ephemeral=True)
+    except Exception as e:
+        await log_exception("send_msg", e)
+        try:
+            await ctx.respond("Failed to send message.", ephemeral=True)
+        except:
+            pass
+
+@bot.slash_command(
+    name="birthday_set",
+    description="Share your birthday with the server."
+)
+async def birthday_set(
+    ctx,
+    month: discord.Option(str, choices=MONTH_CHOICES),
+    day: discord.Option(int),
+):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+
+    mm_dd = build_mm_dd(month, day)
+    if not mm_dd:
+        return await ctx.respond("Invalid date.", ephemeral=True)
+
+    await set_birthday(ctx.guild.id, ctx.author.id, mm_dd)
+    await update_birthday_list_message(ctx.guild)
+    await ctx.respond(f"Birthday set to `{mm_dd}`!", ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_set_for",
+    description="Admin: add or change a member's birthday."
+)
+async def birthday_set_for(
+    ctx,
+    member: discord.Member,
+    month: discord.Option(str, choices=MONTH_CHOICES),
+    day: discord.Option(int),
+):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    mm_dd = build_mm_dd(month, day)
+    if not mm_dd:
+        return await ctx.respond("Invalid date.", ephemeral=True)
+
+    await set_birthday(ctx.guild.id, member.id, mm_dd)
+    await update_birthday_list_message(ctx.guild)
+    await ctx.respond(f"Set {member.mention}'s birthday to `{mm_dd}`.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_remove",
+    description="Admin: remove a member's birthday."
+)
+async def birthday_remove(
+    ctx,
+    member: discord.Member,
+):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    removed = await remove_birthday(ctx.guild.id, member.id)
+    if removed:
+        await update_birthday_list_message(ctx.guild)
+        await ctx.respond(f"Removed birthday for {member.mention}.", ephemeral=True)
+    else:
+        await ctx.respond("No birthday found for that member.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_list",
+    description="View the server’s birthday list."
+)
+async def birthday_list(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+
+    embed = await build_birthday_embed(ctx.guild)
+    await ctx.respond(embed=embed, ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_public",
+    description="Create or refresh the public birthday list message in this channel."
+)
+async def birthday_public(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    embed = await build_birthday_embed(ctx.guild)
+    loc = await get_birthday_public_location(ctx.guild.id)
+
+    if loc:
+        ch_id, msg_id = loc
+        channel = ctx.guild.get_channel(ch_id)
+        if channel:
+            try:
+                msg = await channel.fetch_message(msg_id)
+                await msg.edit(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+                return await ctx.respond("Updated the existing public birthday list message.", ephemeral=True)
+            except Exception:
+                pass
+
+    msg = await ctx.channel.send(embed=embed)
+    await set_birthday_public_location(ctx.guild.id, ctx.channel.id, msg.id)
+    await ctx.respond("Created a new public birthday list message in this channel.", ephemeral=True)
+
+@bot.slash_command(
+    name="qotd_channel",
+    description="Admin: Choose which channel the daily QOTD will post in."
+)
+async def qotd_set_channel(
+    ctx,
+    channel: discord.Option(discord.TextChannel, "Select channel for QOTD"),
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO qotd_settings (guild_id, channel_id, enabled)
+            VALUES ($1, $2, TRUE)
+            ON CONFLICT (guild_id) DO UPDATE SET channel_id = EXCLUDED.channel_id
+            """,
+            ctx.guild.id,
+            channel.id,
+        )
+
+    await ctx.respond(f"QOTD will now post daily in {channel.mention}.", ephemeral=True)
+
+@bot.slash_command(name="qotd_enable", description="Enable daily QOTD for this server.")
+async def qotd_enable(ctx):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO qotd_settings (guild_id, channel_id, enabled)
+            VALUES ($1, 0, TRUE)
+            ON CONFLICT (guild_id) DO UPDATE SET enabled = TRUE
+            """,
+            ctx.guild.id,
+        )
+
+    await ctx.respond("QOTD enabled!", ephemeral=True)
+
+
+@bot.slash_command(name="qotd_disable", description="Disable daily QOTD for this server.")
+async def qotd_disable(ctx):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO qotd_settings (guild_id, channel_id, enabled)
+            VALUES ($1, 0, FALSE)
+            ON CONFLICT (guild_id) DO UPDATE SET enabled = FALSE
+            """,
+            ctx.guild.id,
+        )
+
+    await ctx.respond("QOTD disabled.", ephemeral=True)
+
+@bot.slash_command(
+    name="qotd_ping_role",
+    description="Admin: set or clear the optional QOTD ping role."
+)
+async def qotd_ping_role(
+    ctx,
+    action: discord.Option(str, choices=["set", "clear"], required=True),
+    role: discord.Option(
+        discord.Role,
+        "Role to ping for QOTD (use with 'set')",
+        required=False
+    ) = None,
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    if action == "set":
+        if role is None:
+            return await ctx.respond("You must pick a role when using `set`.", ephemeral=True)
+
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO qotd_settings (guild_id, channel_id, enabled, ping_role_id)
+                VALUES ($1, 0, TRUE, $2)
+                ON CONFLICT (guild_id) DO UPDATE
+                    SET ping_role_id = EXCLUDED.ping_role_id
+                """,
+                ctx.guild.id,
+                role.id,
+            )
+
+        return await ctx.respond(
+            f"QOTD ping role set to {role.mention}. Members with this role will be pinged on QOTD.",
+            ephemeral=True,
+        )
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO qotd_settings (guild_id, channel_id, enabled, ping_role_id)
+            VALUES ($1, 0, TRUE, 0)
+            ON CONFLICT (guild_id) DO UPDATE
+                SET ping_role_id = EXCLUDED.ping_role_id
+            """,
+            ctx.guild.id,
+        )
+
+    await ctx.respond("Cleared the QOTD ping role. QOTD will no longer ping anyone.", ephemeral=True)
+
+@bot.slash_command(
+    name="theme_enable",
+    description="Enable the automatic seasonal theme system for this server."
+)
+async def theme_enable(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("This can only be used in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    await set_theme_enabled(ctx.guild.id, True)
+    await ctx.respond(
+        "Seasonal themes are now **enabled** for this server.\n"
+        "They will update daily according to the configured mode (default: `auto`).",
+        ephemeral=True,
+    )
+
+@bot.slash_command(
+    name="theme_disable",
+    description="Disable the automatic seasonal theme system for this server."
+)
+async def theme_disable(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("This can only be used in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    await set_theme_enabled(ctx.guild.id, False)
+    await ctx.respond(
+        "Seasonal themes are now **disabled** for this server.\n"
+        "The scheduler will not change icons, roles, or emojis automatically.",
+        ephemeral=True,
+    )
+
+@bot.slash_command(
+    name="theme_mode",
+    description="Set the seasonal theme mode for this server."
+)
+async def theme_mode(
+    ctx,
+    mode: discord.Option(
+        str,
+        "How themes should behave",
+        choices=["auto", "none", "halloween", "christmas"],
+    ),
+):
+    if ctx.guild is None:
+        return await ctx.respond("This can only be used in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    await set_theme_mode(ctx.guild.id, mode)
+
+    if mode == "auto":
+        msg = (
+            "Theme mode set to **auto**.\n"
+            "🎃 October → Halloween\n"
+            "🎄 December → Christmas\n"
+            "📘 All other dates → Default"
+        )
+    elif mode == "none":
+        msg = (
+            "Theme mode set to **none**.\n"
+            "The scheduler will clear theme roles/emojis and keep the default icon."
+        )
+    elif mode == "halloween":
+        msg = (
+            "Theme mode set to **halloween**.\n"
+            "The scheduler will keep applying Halloween roles/emojis/icons, even outside October."
+        )
+    else:
+        msg = (
+            "Theme mode set to **christmas**.\n"
+            "The scheduler will keep applying Christmas roles/emojis/icons, even outside December."
+        )
+
+    await ctx.respond(msg, ephemeral=True)
+
+@bot.slash_command(
+    name="theme_update",
+    description="Recheck the theme for this server using its saved settings."
+)
+async def theme_update(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("This can only be used in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    await ctx.defer(ephemeral=True)
+
+    settings = await get_theme_settings(ctx.guild.id)
+    if not settings["enabled"]:
+        return await ctx.followup.send(
+            "Theme system is currently **disabled** for this server. "
+            "Use `/theme_enable` to turn it back on.",
+            ephemeral=True,
+        )
+
+    today = datetime.utcnow().strftime("%m-%d")
+    mode, removed_roles, removed_emojis, added_roles, added_emojis = await apply_theme_for_today_with_mode(
+        ctx.guild,
+        today,
+        settings["mode"],
+    )
+
+    if mode == "halloween":
+        label = "🎃 Halloween theme applied."
+    elif mode == "christmas":
+        label = "🎄 Christmas theme applied."
+    elif mode == "none":
+        label = "🎨 Theme cleared and reverted to default."
+    else:
+        label = "🍂 Auto theme applied based on today’s date."
+
+    summary = (
+        f"{label}\n"
+        f"Roles cleared: `{removed_roles}`\n"
+        f"Emojis cleared: `{removed_emojis}`\n"
+        f"Roles added: `{added_roles}`\n"
+        f"Emojis added: `{added_emojis}`\n"
+        f"Mode: `{settings['mode']}`"
+    )
+    await ctx.followup.send(summary, ephemeral=True)
+
+
+@bot.slash_command(name="edit_msg", description="Edit a bot message in this channel (up to 4 lines)")
+async def edit_msg(
+    ctx,
+    message_id: discord.Option(str, "ID of the bot message", required=True),
     line1: discord.Option(str, "Line 1 (optional)", required=False) = None,
     line2: discord.Option(str, "Line 2 (optional)", required=False) = None,
     line3: discord.Option(str, "Line 3 (optional)", required=False) = None,
     line4: discord.Option(str, "Line 4 (optional)", required=False) = None,
 ):
     if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
-        return await ctx.respond("Admin only.", ephemeral=True)
+        return await ctx.respond("You need Administrator.", ephemeral=True)
     try:
         msg_id_int = int(message_id)
     except ValueError:
@@ -2032,6 +3480,7 @@ async def editbotmsg(
         return await ctx.respond("I cannot access that message.", ephemeral=True)
     except discord.HTTPException:
         return await ctx.respond("Error fetching that message.", ephemeral=True)
+
     if msg.author.id != bot.user.id:
         return await ctx.respond("That message was not sent by me.", ephemeral=True)
 
@@ -2047,78 +3496,21 @@ async def editbotmsg(
     ]
     new_content = "\n".join(new_lines)
 
-    await msg.edit(content=new_content)
-    await ctx.respond("Message updated.", ephemeral=True)
-
-@bot.slash_command(name="editbotmsg", description="Edit a bot message in this channel with up to 4 lines")
-async def editbotmsg(
-    ctx,
-    message_id: discord.Option(str, "Message ID", required=True),
-    line1: discord.Option(str, "Line 1 (optional)", required=False) = None,
-    line2: discord.Option(str, "Line 2 (optional)", required=False) = None,
-    line3: discord.Option(str, "Line 3 (optional)", required=False) = None,
-    line4: discord.Option(str, "Line 4 (optional)", required=False) = None,
-):
-    ...
-    await ctx.respond("Message updated.", ephemeral=True)
+    try:
+        await msg.edit(content=new_content)
+        await ctx.respond("Message updated.", ephemeral=True)
+    except Exception as e:
+        await log_exception("edit_msg", e)
+        try:
+            await ctx.respond("Failed to edit message.", ephemeral=True)
+        except:
+            pass
+            
 
 @bot.slash_command(
-    name="add_role_birthday",
-    description="Set which role should be used as the birthday role for this server"
+    name="active_member_role_add",
+    description="Mark a member as active right now (gives active role)."
 )
-async def add_role_birthday(
-    ctx,
-    role: discord.Option(discord.Role, "Role to mark as the birthday role", required=True),
-):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-
-    updated_cfg = await _update_guild_config(
-        ctx,
-        {"birthday_role_id": role.id},
-        "birthday_role_id"
-    )
-    if updated_cfg is None:
-        return
-
-    await ctx.respond(f"{role.mention} set as this server's birthday role.", ephemeral=True)
-
-@bot.slash_command(name="birthday_announce", description="Manually send the birthday message for a member")
-async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member", required=True)):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("You need Administrator.", ephemeral=True)
-
-    cfg = await get_guild_config(ctx.guild)
-    if cfg:
-        ch = await get_config_channel(ctx.guild, "welcome_channel_id")
-    else:
-        ch = bot.get_channel(WELCOME_CHANNEL_ID)
-
-    if not ch:
-        return await ctx.respond("Birthday/welcome channel not found. Use /add_channel_welcome or /add_channel_birthday_announcement first.", ephemeral=True)
-
-    msg = BIRTHDAY_TEXT.replace("{mention}", member.mention) if BIRTHDAY_TEXT else f"Happy birthday, {member.mention}!"
-    await ch.send(msg)
-    await log_to_bot_channel(
-        f"[BIRTHDAY] Manual birthday announcement sent for {member.mention} by {ctx.author.mention}."
-    )
-    await ctx.respond(f"Sent birthday message for {member.mention}.", ephemeral=True)
-
-@bot.slash_command(name="birthday_announce", description="Manually send the birthday message for a member")
-async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member", required=True)):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("You need Administrator.", ephemeral=True)
-    ch = bot.get_channel(WELCOME_CHANNEL_ID)
-    if not ch:
-        return await ctx.respond("Welcome channel not found.", ephemeral=True)
-    msg = BIRTHDAY_TEXT.replace("{mention}", member.mention) if BIRTHDAY_TEXT else f"Happy birthday, {member.mention}!"
-    await ch.send(msg)
-    await log_to_bot_channel(
-        f"[BIRTHDAY] Manual birthday announcement sent for {member.mention} by {ctx.author.mention}."
-    )
-    await ctx.respond(f"Sent birthday message for {member.mention}.", ephemeral=True)
-
-@bot.slash_command(name="activity_add", description="Mark a member as active right now")
 async def activity_add(
     ctx,
     member: discord.Option(discord.Member, "Member to mark active", required=True),
@@ -2128,64 +3520,77 @@ async def activity_add(
     await touch_member_activity(member)
     await ctx.respond(f"{member.mention} marked active and given the active role.", ephemeral=True)
 
-@bot.slash_command(name="prize_list", description="List scheduled prizes")
-async def prize_list(
-    ctx,
-    prize_type: discord.Option(str, choices=["movie", "nitro", "steam"], required=True),
-):
+
+@bot.slash_command(
+    name="prize_list",
+    description="View all scheduled Dead Chat prize drops."
+)
+async def prize_list(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
-    entries = get_prize_list_and_entries(prize_type)
-    if not entries:
-        return await ctx.respond("No scheduled prizes.", ephemeral=True)
-    if len(entries) == 0:
+    cfg = await get_guild_config(ctx.guild)
+    sch = cfg.get("prize_scheduled", [])
+    if not sch:
         return await ctx.respond("No scheduled prizes.", ephemeral=True)
     lines = []
-    for p in entries:
-        lines.append(f"ID {p['id']} ┃ {p['date']} ┃ <#{p['channel_id']}>")
+    for p in sch:
+        lines.append(f"ID {p['id']} ┃ {p['title']} ┃ {p['date']} ┃ <#{p['channel_id']}>")
     text = "\n".join(lines)
-    await ctx.respond(f"Scheduled {prize_type} prizes:\n{text}", ephemeral=True)
+    await ctx.respond(f"Scheduled prizes:\n{text}", ephemeral=True)
 
-@bot.slash_command(name="prize_delete", description="Delete a scheduled prize")
+
+@bot.slash_command(
+    name="prize_delete",
+    description="Delete a scheduled prize drop by ID."
+)
 async def prize_delete(
     ctx,
-    prize_type: discord.Option(str, choices=["movie", "nitro", "steam"], required=True),
     prize_id: discord.Option(int, "ID from /prize_list", required=True),
 ):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
-    entries = get_prize_list_and_entries(prize_type)
-    if entries is None:
-        return await ctx.respond("Invalid prize type.", ephemeral=True)
-    before = len(entries)
-    entries[:] = [p for p in entries if p.get("id") != prize_id]
-    after = len(entries)
+    cfg = await get_guild_config(ctx.guild)
+    sch = cfg.get("prize_scheduled", [])
+    before = len(sch)
+    sch = [p for p in sch if p.get("id") != prize_id]
+    after = len(sch)
     if before == after:
         return await ctx.respond("No prize with that ID.", ephemeral=True)
-    await save_prize_storage()
-    await ctx.respond(f"Deleted scheduled {prize_type} prize ID {prize_id}.", ephemeral=True)
+    cfg["prize_scheduled"] = sch
+    await save_guild_config_db(ctx.guild, cfg)
+    await ctx.respond(f"Deleted scheduled prize ID {prize_id}.", ephemeral=True)
 
-@bot.slash_command(name="prize_movie")
-async def prize_movie(
+
+@bot.slash_command(
+    name="prize_day",
+    description="Schedule or instantly drop a Dead Chat prize."
+)
+async def schedule_prize(
     ctx,
+    title: discord.Option(str, "Prize title", required=True),
     month: discord.Option(str, "Month (UTC date)", required=False, choices=MONTH_CHOICES),
     day: discord.Option(int, "Day of month", required=False),
 ):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
-    content = "**YOU'VE FOUND A PRIZE!**\nPrize: *Movie Request*\nDrop Rate: *Common*"
+
+    guild = ctx.guild
+
+    cfg = await get_guild_config(ctx.guild)
+    defs = cfg.get("prize_defs", {})
+    rarity = defs.get(title)
+    if not rarity:
+        return await ctx.respond(f"Prize '{title}' not defined. Use /prize_add first.", ephemeral=True)
+    content = f"**YOU'VE FOUND A PRIZE!**\nPrize: *{title}*\nDrop Rate: *{rarity}*"
     if month is None and day is None:
-        drop_ch = bot.get_channel(PRIZE_DROP_CHANNEL_ID) or ctx.channel
-        if isinstance(drop_ch, discord.TextChannel):
-            await drop_ch.send(content, view=MoviePrizeView())
-            await log_to_bot_channel(
-                f"[PRIZE] Immediate movie prize drop triggered by {ctx.author.mention} in {drop_ch.mention}."
-            )
-            return await ctx.respond(f"Prize drop sent in {drop_ch.mention}.", ephemeral=True)
-        await log_to_bot_channel(
-            f"[PRIZE] Immediate movie prize drop triggered by {ctx.author.mention} in {ctx.channel.mention}."
+        drop_ch = guild.get_channel(cfg.get("prize_drop_channel_id")) or ctx.channel
+        view = PrizeView(title, rarity)
+        await drop_ch.send(content, view=view)
+        await log_to_guild_bot_channel(
+            ctx.guild,
+            f"[PRIZE] Immediate prize drop '{title}' triggered by {ctx.author.mention} in {drop_ch.mention}."
         )
-        return await ctx.respond(content, view=MoviePrizeView())
+        return await ctx.respond(f"Prize drop sent in {drop_ch.mention}.", ephemeral=True)
     if month is None or day is None:
         return await ctx.respond("Provide month and day, or leave both blank.", ephemeral=True)
     month_num = MONTH_TO_NUM.get(month)
@@ -2202,120 +3607,60 @@ async def prize_movie(
         except ValueError:
             return await ctx.respond("Invalid date.", ephemeral=True)
     date_str = target.strftime("%Y-%m-%d")
-    await add_scheduled_prize("movie", ctx.channel.id, content, date_str)
-    await log_to_bot_channel(
-        f"[PRIZE] Scheduled movie prize on {date_str} by {ctx.author.mention} for {ctx.channel.mention}."
+    await add_scheduled_prize(ctx.guild, title, ctx.channel.id, content, date_str)
+    await log_to_guild_bot_channel(
+        ctx.guild,
+        f"[PRIZE] Scheduled prize '{title}' on {date_str} by {ctx.author.mention} for {ctx.channel.mention}."
     )
-    await ctx.respond(f"Scheduled for {date_str} (triggers on first Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC).", ephemeral=True)
+    await ctx.respond(
+        f"Scheduled for {date_str} (triggers on first Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC).",
+        ephemeral=True
+    )
 
-@bot.slash_command(name="prize_nitro")
-async def prize_nitro(
+
+@bot.slash_command(
+    name="prize_announce_send",
+    description="Manually announce a Dead Chat prize winner."
+)
+async def prize_announce(
     ctx,
-    month: discord.Option(str, "Month (UTC date)", required=False, choices=MONTH_CHOICES),
-    day: discord.Option(int, "Day of month", required=False),
+    member: discord.Option(discord.Member, "Member", required=True),
+    prize: discord.Option(str, "Prize title", required=True),
 ):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
-    content = "**YOU'VE FOUND A PRIZE!**\nPrize: *Month of Nitro Basic*\nDrop Rate: *Uncommon*"
-    if month is None and day is None:
-        drop_ch = bot.get_channel(PRIZE_DROP_CHANNEL_ID) or ctx.channel
-        if isinstance(drop_ch, discord.TextChannel):
-            await drop_ch.send(content, view=NitroPrizeView())
-            await log_to_bot_channel(
-                f"[PRIZE] Immediate nitro prize drop triggered by {ctx.author.mention} in {drop_ch.mention}."
-            )
-            return await ctx.respond(f"Prize drop sent in {drop_ch.mention}.", ephemeral=True)
-        await log_to_bot_channel(
-            f"[PRIZE] Immediate nitro prize drop triggered by {ctx.author.mention} in {ctx.channel.mention}."
-        )
-        return await ctx.respond(content, view=NitroPrizeView())
-    if month is None or day is None:
-        return await ctx.respond("Provide month and day, or leave both blank.", ephemeral=True)
-    month_num = MONTH_TO_NUM.get(month)
-    if not month_num:
-        return await ctx.respond("Invalid month.", ephemeral=True)
-    now = datetime.utcnow()
-    try:
-        target = datetime(now.year, month_num, day, 0, 0)
-    except ValueError:
-        return await ctx.respond("Invalid date.", ephemeral=True)
-    if target.date() < now.date():
-        try:
-            target = datetime(now.year + 1, month_num, day, 0, 0)
-        except ValueError:
-            return await ctx.respond("Invalid date.", ephemeral=True)
-    date_str = target.strftime("%Y-%m-%d")
-    await add_scheduled_prize("nitro", ctx.channel.id, content, date_str)
-    await log_to_bot_channel(
-        f"[PRIZE] Scheduled nitro prize on {date_str} by {ctx.author.mention} for {ctx.channel.mention}."
-    )
-    await ctx.respond(f"Scheduled for {date_str} (triggers on first Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC).", ephemeral=True)
-
-@bot.slash_command(name="prize_steam")
-async def prize_steam(
-    ctx,
-    month: discord.Option(str, "Month (UTC date)", required=False, choices=MONTH_CHOICES),
-    day: discord.Option(int, "Day of month", required=False),
-):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    content = "**YOU'VE FOUND A PRIZE!**\nPrize: *Steam Gift Card*\nDrop Rate: *Rare*"
-    if month is None and day is None:
-        drop_ch = bot.get_channel(PRIZE_DROP_CHANNEL_ID) or ctx.channel
-        if isinstance(drop_ch, discord.TextChannel):
-            await drop_ch.send(content, view=SteamPrizeView())
-            await log_to_bot_channel(
-                f"[PRIZE] Immediate steam prize drop triggered by {ctx.author.mention} in {drop_ch.mention}."
-            )
-            return await ctx.respond(f"Prize drop sent in {drop_ch.mention}.", ephemeral=True)
-        await log_to_bot_channel(
-            f"[PRIZE] Immediate steam prize drop triggered by {ctx.author.mention} in {ctx.channel.mention}."
-        )
-        return await ctx.respond(content, view=SteamPrizeView())
-    if month is None or day is None:
-        return await ctx.respond("Provide month and day, or leave both blank.", ephemeral=True)
-    month_num = MONTH_TO_NUM.get(month)
-    if not month_num:
-        return await ctx.respond("Invalid month.", ephemeral=True)
-    now = datetime.utcnow()
-    try:
-        target = datetime(now.year, month_num, day, 0, 0)
-    except ValueError:
-        return await ctx.respond("Invalid date.", ephemeral=True)
-    if target.date() < now.date():
-        try:
-            target = datetime(now.year + 1, month_num, day, 0, 0)
-        except ValueError:
-            return await ctx.respond("Invalid date.", ephemeral=True)
-    date_str = target.strftime("%Y-%m-%d")
-    await add_scheduled_prize("steam", ctx.channel.id, content, date_str)
-    await log_to_bot_channel(
-        f"[PRIZE] Scheduled steam prize on {date_str} by {ctx.author.mention} for {ctx.channel.mention}."
-    )
-    await ctx.respond(f"Scheduled for {date_str} (triggers on first Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC).", ephemeral=True)
-
-@bot.slash_command(name="prize_announce")
-async def prize_announce(ctx, member: discord.Option(discord.Member, required=True), prize: discord.Option(str, choices=list(PRIZE_DEFS.keys()), required=True)):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    dead_role = ctx.guild.get_role(DEAD_CHAT_ROLE_ID)
+    guild = ctx.guild
+    cfg = await ensure_guild_config(guild)
+    rarity = cfg.get("prize_defs", {}).get(prize)
+    if not rarity:
+        return await ctx.respond("Prize not defined.", ephemeral=True)
+    dead_role_id = cfg.get("dead_chat_role_id", 0)
+    dead_role = guild.get_role(dead_role_id)
     role_mention = dead_role.mention if dead_role else "the Dead Chat role"
-    rarity = PRIZE_DEFS[prize]
-    msg = PRIZE_ANNOUNCE_MESSAGE.format(
-        emoji=PRIZE_EMOJI,
+    text = cfg.get("prize_announce_text") or DEFAULT_PRIZE_ANNOUNCE_MESSAGE
+    msg = text.format(
         winner=member.mention,
         gift=prize,
         role=role_mention,
         rarity=rarity
     )
     await ctx.channel.send(msg)
-    await log_to_bot_channel(
-        f"[PRIZE] Manual prize announcement: {member.mention} → '{prize}' (rarity {rarity}) by {ctx.author.mention}."
+    await log_to_guild_bot_channel(
+        guild,
+        f"[PRIZE] Manual prize announce: {member.mention} → '{prize}' (rarity {rarity}) by {ctx.author.mention}."
     )
-    await ctx.respond("Announcement sent.", ephemeral=True)
+    await ctx.respond("Announce sent.", ephemeral=True)
 
-@bot.slash_command(name="sticky")
-async def sticky(ctx, action: discord.Option(str, choices=["set", "clear"], required=True), text: discord.Option(str, required=False)):
+
+@bot.slash_command(
+    name="sticky_msg",
+    description="Set or clear a sticky message in this channel."
+)
+async def sticky(
+    ctx,
+    action: discord.Option(str, choices=["set", "clear"], required=True),
+    text: discord.Option(str, required=False),
+):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
     if action == "set":
@@ -2328,21 +3673,24 @@ async def sticky(ctx, action: discord.Option(str, choices=["set", "clear"], requ
                 msg = await ctx.channel.fetch_message(old_id)
                 await msg.edit(content=text)
                 await ctx.respond("Sticky updated.", ephemeral=True)
-                await log_to_bot_channel(
+                await log_to_guild_bot_channel(
+                    ctx.guild,
                     f"[STICKY] Updated sticky in {ctx.channel.mention} by {ctx.author.mention}."
                 )
             except discord.NotFound:
                 msg = await ctx.channel.send(text)
                 sticky_messages[ctx.channel.id] = msg.id
                 await ctx.respond("Sticky created.", ephemeral=True)
-                await log_to_bot_channel(
+                await log_to_guild_bot_channel(
+                    ctx.guild,
                     f"[STICKY] Created sticky in {ctx.channel.mention} by {ctx.author.mention}."
                 )
         else:
             msg = await ctx.channel.send(text)
             sticky_messages[ctx.channel.id] = msg.id
             await ctx.respond("Sticky created.", ephemeral=True)
-            await log_to_bot_channel(
+            await log_to_guild_bot_channel(
+                ctx.guild,
                 f"[STICKY] Created sticky in {ctx.channel.mention} by {ctx.author.mention}."
             )
         await save_stickies()
@@ -2357,24 +3705,16 @@ async def sticky(ctx, action: discord.Option(str, choices=["set", "clear"], requ
                 pass
         await save_stickies()
         await ctx.respond("Sticky cleared.", ephemeral=True)
-        await log_to_bot_channel(
+        await log_to_guild_bot_channel(
+            ctx.guild,
             f"[STICKY] Cleared sticky in {ctx.channel.mention} by {ctx.author.mention}."
         )
 
-@bot.slash_command(name="plague_init", description="Create plague storage message (run once)")
-async def plague_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("PLAGUE_DATA:[]")
-    global plague_storage_message_id
-    plague_storage_message_id = msg.id
-    await save_plague_storage()
-    await ctx.respond(f"Plague storage created: {msg.id}", ephemeral=True)
 
-@bot.slash_command(name="plague_infect", description="Schedule a contagious Dead Chat day")
+@bot.slash_command(
+    name="plague_day",
+    description="Schedule a plague day; first Dead Chat steal gets infected."
+)
 async def plague_infect(
     ctx,
     month: discord.Option(str, "Month", required=False, choices=MONTH_CHOICES),
@@ -2401,20 +3741,460 @@ async def plague_infect(
             except ValueError:
                 return await ctx.respond("Invalid date.", ephemeral=True)
     date_str = target.strftime("%Y-%m-%d")
-    plague_scheduled.clear()
-    plague_scheduled.append(
-        {
-            "date": date_str,
-        }
-    )
-    await save_plague_storage()
-    await log_to_bot_channel(
+    guild_id = ctx.guild.id
+    if guild_id not in plague_scheduled:
+        plague_scheduled[guild_id] = []
+    plague_scheduled[guild_id] = [{"date": date_str}]
+    cfg = await get_guild_config(ctx.guild)
+    updates = {"plague_scheduled": plague_scheduled[guild_id]}
+    await _update_guild_config(ctx, updates, "plague schedule")
+    await log_to_guild_bot_channel(
+        ctx.guild,
         f"[PLAGUE] Plague scheduled for {date_str} by {ctx.author.mention}."
     )
     if month is None:
-        await ctx.respond(f"Plague set for today. First Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC will be infected.", ephemeral=True)
+        await ctx.respond(
+            f"Plague set for today. First Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC will be infected.",
+            ephemeral=True
+        )
     else:
-        await ctx.respond(f"Plague scheduled for {date_str}. First Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC will be infected.", ephemeral=True)
+        await ctx.respond(
+            f"Plague scheduled for {date_str}. First Dead Chat steal after {PRIZE_PLAGUE_TRIGGER_HOUR_UTC}:00 UTC will be infected.",
+            ephemeral=True
+        )
+
+
+@bot.slash_command(
+    name="welcome_channel",
+    description="Set the default welcome channel for new members."
+)
+async def add_channel_welcome(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    updates = {"welcome_channel_id": channel.id}
+    cfg = await _update_guild_config(ctx, updates, "welcome channel")
+    if cfg:
+        await ctx.respond(f"Set welcome channel to {channel.mention}", ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_announce_channel",
+    description="Set the channel where birthday messages are posted."
+)
+async def add_channel_birthday_announce(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    updates = {"birthday_announce_channel_id": channel.id}
+    cfg = await _update_guild_config(ctx, updates, "birthday announce channel")
+    if cfg:
+        await ctx.respond(f"Set birthday announce channel to {channel.mention}", ephemeral=True)
+
+@bot.slash_command(
+    name="deadchat_trigger_channels",
+    description="Add a channel that counts for Dead Chat steals."
+)
+async def add_channel_dead_chat_triggers(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    cfg = await get_guild_config(ctx.guild)
+    ids = cfg.get("dead_chat_channel_ids", [])
+    if channel.id in ids:
+        await ctx.respond("Already added.", ephemeral=True)
+        return
+    ids.append(channel.id)
+    updates = {"dead_chat_channel_ids": ids}
+    new_cfg = await _update_guild_config(ctx, updates, "dead chat trigger channel")
+    if new_cfg:
+        await ctx.respond(f"Added {channel.mention} to dead chat triggers.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="prize_announce_channel",
+    description="Set the channel where prize wins are announced."
+)
+async def add_channel_prize_announce(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    updates = {"prize_announce_channel_id": channel.id}
+    cfg = await _update_guild_config(ctx, updates, "prize announce channel")
+    if cfg:
+        await ctx.respond(f"Set prize announce channel to {channel.mention}", ephemeral=True)
+
+@bot.slash_command(
+    name="twitch_announce_channel",
+    description="Set the default channel where Twitch live messages are posted."
+)
+async def set_twitch_announce_channel(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    updates = {"twitch_announce_channel_id": channel.id}
+    cfg = await _update_guild_config(ctx, updates, "twitch announce channel")
+    if cfg:
+        await ctx.respond(f"Set Twitch announce channel to {channel.mention}", ephemeral=True)
+
+@bot.slash_command(
+    name="log_channel_members",
+    description="Set the member join/leave/ban/kick log channel."
+)
+async def add_channel_member_log(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    updates = {"mod_log_channel_id": channel.id}
+    cfg = await _update_guild_config(ctx, updates, "member log channel")
+    if cfg:
+        await ctx.respond(f"Set member log channel to {channel.mention}", ephemeral=True)
+
+
+@bot.slash_command(
+    name="log_channel_bots",
+    description="Set the bot join/leave/ban log channel."
+)
+async def add_channel_bot_log(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    updates = {"bot_log_channel_id": channel.id}
+    cfg = await _update_guild_config(ctx, updates, "bot log channel")
+    if cfg:
+        await ctx.respond(f"Set bot log channel to {channel.mention}", ephemeral=True)
+
+
+@bot.slash_command(
+    name="prize_channel",
+    description="Set the channel where prize drops appear."
+)
+async def add_channel_prize_drop(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    updates = {"prize_drop_channel_id": channel.id}
+    cfg = await _update_guild_config(ctx, updates, "prize drop channel")
+    if cfg:
+        await ctx.respond(f"Set prize drop channel to {channel.mention}", ephemeral=True)
+
+
+@bot.slash_command(
+    name="auto_delete_channel",
+    description="Add a channel to the auto-delete system."
+)
+async def add_channel_auto_delete(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    cfg = await ensure_guild_config(ctx.guild)
+    ids = cfg.get("auto_delete_channel_ids", [])
+    if channel.id in ids:
+        await ctx.respond("Already added.", ephemeral=True)
+        return
+
+    ids.append(channel.id)
+    updates = {"auto_delete_channel_ids": ids}
+    new_cfg = await _update_guild_config(ctx, updates, "auto delete channel")
+    if new_cfg:
+        await ctx.respond(f"Added {channel.mention} to auto delete channels.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="active_member_role",
+    description="Set the role used for active members."
+)
+async def add_role_active(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
+    updates = {"active_role_id": role.id}
+    cfg = await _update_guild_config(ctx, updates, "active role")
+    if cfg:
+        await ctx.respond(f"Set active role to {role.mention}", ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_role",
+    description="Set the role used to mark birthdays."
+)
+async def add_role_birthday(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
+    updates = {"birthday_role_id": role.id}
+    cfg = await _update_guild_config(ctx, updates, "birthday role")
+    if cfg:
+        await ctx.respond(f"Set birthday role to {role.mention}", ephemeral=True)
+
+@bot.slash_command(
+    name="vc_role_link",
+    description="Link a voice channel to a role (join = add, leave = remove)."
+)
+async def vc_role_link(
+    ctx,
+    channel: discord.Option(discord.VoiceChannel, "Voice channel to link", required=True),
+    role: discord.Option(discord.Role, "Role to give while in this VC", required=True),
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    await set_vc_role_link(ctx.guild.id, channel.id, role.id)
+    await ctx.respond(
+        f"Linked voice channel {channel.mention} → role {role.mention}. "
+        f"Members will get this role while in that VC.",
+        ephemeral=True,
+    )
+    await log_to_guild_bot_channel(
+        ctx.guild,
+        f"[VC-ROLE] {ctx.author.mention} linked VC {channel.mention} to role {role.mention}."
+    )
+
+@bot.slash_command(
+    name="vc_role_unlink",
+    description="Remove the VC→role link for a voice channel."
+)
+async def vc_role_unlink(
+    ctx,
+    channel: discord.Option(discord.VoiceChannel, "Voice channel to unlink", required=True),
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    removed = await remove_vc_role_link(ctx.guild.id, channel.id)
+    if removed:
+        await ctx.respond(
+            f"Unlinked VC {channel.mention} from its role mapping.",
+            ephemeral=True,
+        )
+        await log_to_guild_bot_channel(
+            ctx.guild,
+            f"[VC-ROLE] {ctx.author.mention} unlinked VC {channel.mention}."
+        )
+    else:
+        await ctx.respond(
+            "There was no VC role link for that channel.",
+            ephemeral=True,
+        )
+
+@bot.slash_command(
+    name="vc_role_list",
+    description="Show all voice-channel role links for this server."
+)
+async def vc_role_list(ctx):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    links = await get_guild_vc_links(ctx.guild.id)
+    if not links:
+        return await ctx.respond("No VC role links are configured for this server.", ephemeral=True)
+
+    lines = []
+    for channel_id, role_id in links.items():
+        ch = ctx.guild.get_channel(channel_id)
+        role = ctx.guild.get_role(role_id)
+        ch_label = ch.mention if ch else f"<#{channel_id}> (missing)"
+        role_label = role.mention if role else f"<@&{role_id}> (missing)"
+        lines.append(f"{ch_label} → {role_label}")
+
+    text = "\n".join(lines)
+    if len(text) > 1900:
+        text = text[:1900] + "\n...[truncated]"
+
+    embed = discord.Embed(
+        title="VC Role Links",
+        description=text,
+        color=discord.Color.blurple(),
+    )
+    await ctx.respond(embed=embed, ephemeral=True)
+
+
+@bot.slash_command(
+    name="deadchat_role",
+    description="Set the role given to the current Dead Chat holder."
+)
+async def add_role_dead_chat(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
+    updates = {"dead_chat_role_id": role.id}
+    cfg = await _update_guild_config(ctx, updates, "dead chat role")
+    if cfg:
+        await ctx.respond(f"Set dead chat role to {role.mention}", ephemeral=True)
+
+
+@bot.slash_command(
+    name="plague_role",
+    description="Set the role used for plague infections."
+)
+async def add_role_infected(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
+    updates = {"infected_role_id": role.id}
+    cfg = await _update_guild_config(ctx, updates, "infected role")
+    if cfg:
+        await ctx.respond(f"Set infected role to {role.mention}", ephemeral=True)
+
+
+@bot.slash_command(
+    name="member_join_role",
+    description="Set the role given to members after a short delay."
+)
+async def add_role_member_join(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
+    updates = {"member_join_role_id": role.id}
+    cfg = await _update_guild_config(ctx, updates, "member join role")
+    if cfg:
+        await ctx.respond(f"Set member join role to {role.mention}", ephemeral=True)
+
+
+@bot.slash_command(
+    name="bot_join_role",
+    description="Set the role given automatically to new bots."
+)
+async def add_role_bot_join(
+    ctx,
+    role: discord.Option(discord.Role, required=True),
+):
+    updates = {"bot_join_role_id": role.id}
+    cfg = await _update_guild_config(ctx, updates, "bot join role")
+    if cfg:
+        await ctx.respond(f"Set bot join role to {role.mention}", ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_msg",
+    description="Set the birthday announcement template text."
+)
+async def add_text_birthday(
+    ctx,
+    text: discord.Option(str, required=True),
+):
+    updates = {"birthday_text": text}
+    cfg = await _update_guild_config(ctx, updates, "birthday text")
+    if cfg:
+        await ctx.respond("Set birthday text.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="twitch_msg",
+    description="Set the Twitch \"went live\" announcement template."
+)
+async def add_text_twitch(
+    ctx,
+    text: discord.Option(str, required=True),
+):
+    updates = {"twitch_live_text": text}
+    cfg = await _update_guild_config(ctx, updates, "twitch text")
+    if cfg:
+        await ctx.respond("Set twitch live text.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="plague_msg",
+    description="Set the \"plague outbreak\" Dead Chat message."
+)
+async def add_text_plague(
+    ctx,
+    text: discord.Option(str, required=True),
+):
+    updates = {"plague_outbreak_text": text}
+    cfg = await _update_guild_config(ctx, updates, "plague text")
+    if cfg:
+        await ctx.respond("Set plague outbreak text.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="twitch_channel",
+    description="Add a Twitch channel and where its lives are announced."
+)
+async def add_twitch_notification(
+    ctx,
+    twitch_channel: discord.Option(str, "Twitch username", required=True),
+    notification_channel: discord.Option(discord.TextChannel, required=False),
+):
+    cfg = await get_guild_config(ctx.guild)
+    configs = cfg.get("twitch_configs", [])
+    low_name = twitch_channel.lower()
+    if any(tc["username"].lower() == low_name for tc in configs):
+        await ctx.respond("Twitch channel already added.", ephemeral=True)
+        return
+    if notification_channel is None:
+        announce_id = cfg.get("twitch_announce_channel_id", 0)
+        if announce_id == 0:
+            await ctx.respond("Please run `/twitch_channel` again and choose an `announce_channel` (this sets the default Twitch announce channel).", ephemeral=True)
+            return
+    else:
+        announce_id = notification_channel.id
+    configs.append({"username": twitch_channel, "announce_channel_id": announce_id})
+    updates = {"twitch_configs": configs}
+    new_cfg = await _update_guild_config(ctx, updates, "twitch notification")
+    if new_cfg:
+        await ctx.respond(f"Added twitch notification for {twitch_channel} to <#{announce_id}>.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="prize_add",
+    description="Define a prize title and its drop rarity."
+)
+async def add_prize(
+    ctx,
+    title: discord.Option(str, required=True),
+    drop_rate: discord.Option(str, choices=["Common", "Uncommon", "Rare"], required=True),
+):
+    cfg = await get_guild_config(ctx.guild)
+    defs = cfg.get("prize_defs", {})
+    if title in defs:
+        await ctx.respond("Prize title already exists.", ephemeral=True)
+        return
+    defs[title] = drop_rate
+    updates = {"prize_defs": defs}
+    new_cfg = await _update_guild_config(ctx, updates, "prize")
+    if new_cfg:
+        await ctx.respond(f"Added prize '{title}' with drop rate {drop_rate}.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="auto_delete_delay",
+    description="Set how long messages last in auto-delete channels (seconds)."
+)
+async def set_auto_delete_delay(
+    ctx,
+    seconds: discord.Option(int, required=True),
+):
+    updates = {"auto_delete_delay_seconds": seconds}
+    cfg = await _update_guild_config(ctx, updates, "auto delete delay")
+    if cfg:
+        await ctx.respond(f"Set auto delete delay to {seconds} seconds.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="auto_delete_filters",
+    description="Add a phrase that never gets auto-deleted."
+)
+async def add_auto_delete_ignore(
+    ctx,
+    phrase: discord.Option(str, required=True),
+):
+    cfg = await get_guild_config(ctx.guild)
+    phrases = cfg.get("auto_delete_ignore_phrases", [])
+    if phrase in phrases:
+        await ctx.respond("Phrase already added.", ephemeral=True)
+        return
+    phrases.append(phrase)
+    updates = {"auto_delete_ignore_phrases": phrases}
+    new_cfg = await _update_guild_config(ctx, updates, "auto delete ignore phrase")
+    if new_cfg:
+        await ctx.respond(f"Added ignore phrase '{phrase}'.", ephemeral=True)
 
 
 ############### ON_READY & BOT START ###############
