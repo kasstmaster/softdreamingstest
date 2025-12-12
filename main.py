@@ -1545,12 +1545,12 @@ async def handle_dead_chat_message(message: discord.Message):
                     pass
 
     if triggered_plague:
-        plague_text = cfg.get("plague_outbreak_text") or DEFAULT_PLAGUE_OUTBREAK_MESSAGE).format(mention=message.author.mention)
+        plague_text = (cfg.get("plague_outbreak_text") or DEFAULT_PLAGUE_OUTBREAK_MESSAGE).format(mention=message.author.mention)
         notice = await message.channel.send(plague_text)
         await log_to_guild_bot_channel(guild, f"[PLAGUE] {message.author.mention} infected on {today_str} in {message.channel.mention}.")
     else:
         minutes = DEAD_CHAT_IDLE_SECONDS // 60
-        deadchat_text = cfg.get("deadchat_steal_text") or DEFAULT_DEADCHAT_STEAL_MESSAGE)
+        deadchat_text = cfg.get("deadchat_steal_text") or DEFAULT_DEADCHAT_STEAL_MESSAGE
         notice_text = deadchat_text.format(mention=message.author.mention, role=role.mention, minutes=minutes)
         notice = await message.channel.send(notice_text)
         await log_to_guild_bot_channel(guild, f"[DEADCHAT] {message.author.mention} stole {role.mention} in {message.channel.mention} after {minutes}+ minutes idle.")
