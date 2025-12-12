@@ -1842,7 +1842,7 @@ class SetupPagerView(discord.ui.View):
         embed.set_footer(text="Use the buttons below to switch pages.")
         return embed
 
-    def make_commands_embed(self) -> discord.Embed:
+        def make_commands_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="Admin Bot Setup Checklist",
             description="Run these commands to configure all features.",
@@ -1878,11 +1878,13 @@ class SetupPagerView(discord.ui.View):
             name="ROLES",
             value=(
                 "> `/active_member_role` - Role for active members.\n"
+                "> `/active_member_role_add` - Mark a member active right now.\n"
                 "> `/birthday_role` - Role for birthdays.\n"
                 "> `/deadchat_role` - Dead Chat holder role.\n"
                 "> `/plague_role` - Plague infection role.\n"
                 "> `/member_join_role` - Auto-assign on member join.\n"
-                "> `/bot_join_role` - Auto-assign on bot join."
+                "> `/bot_join_role` - Auto-assign on bot join.\n"
+                "> `/qotd_ping_role` - Set or clear the optional QOTD ping role."
             ),
             inline=False,
         )
