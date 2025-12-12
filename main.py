@@ -194,31 +194,26 @@ async def init_db():
         );
         """)
 
-                await conn.execute("""
+        await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS birthday_announce_channel_id BIGINT DEFAULT 0;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS twitch_announce_channel_id BIGINT DEFAULT 0;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS prize_announce_channel_id BIGINT DEFAULT 0;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT DEFAULT 0;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS mod_log_channel_id BIGINT DEFAULT 0;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS bot_log_channel_id BIGINT DEFAULT 0;
@@ -325,57 +320,46 @@ async def init_db():
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS prize_claim_text TEXT;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS prize_announce_text TEXT;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS deadchat_steal_text TEXT;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS plague_outbreak_text TEXT;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS twitch_live_text TEXT;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS birthday_text TEXT;
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS infected_members TEXT DEFAULT '{}';
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS plague_scheduled TEXT DEFAULT '[]';
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS prize_scheduled TEXT DEFAULT '[]';
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS prize_defs TEXT DEFAULT '{}';
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS twitch_configs TEXT DEFAULT '[]';
         """)
-
         await conn.execute("""
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS auto_delete_ignore_phrases TEXT DEFAULT '[]';
