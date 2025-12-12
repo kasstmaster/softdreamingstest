@@ -1785,114 +1785,98 @@ async def setup(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
 
-    text = """
-**Full Setup Checklist**
+    embed = discord.Embed(
+        title="Admin Bot Setup Checklist",
+        description="Run these commands to fully configure the bot.",
+        color=discord.Color.blurple(),
+    )
 
-CHANNELS:
-`/welcome_channel` - Set the default welcome channel for new members.
-`/birthday_announce_channel` - Set the channel where birthday messages are posted.
-`/twitch_stream_channel` - Set the default channel for Twitch live notifications.
-`/deadchat_trigger_channels` - Add a channel that counts for Dead Chat steals.
-`/prize_announce_channel` - Set the channel where prize wins are announced.
-`/prize_channel` - Set the channel where prize drops appear.
-`/log_channel_members` - Set the member join/leave/ban/kick log channel.
-`/log_channel_bots` - Set the bot join/leave/ban log channel.
-`/auto_delete_channel` - Add a channel to the auto-delete system.
+    embed.add_field(
+        name="CHANNELS",
+        value=(
+            "`/welcome_channel` - Set the default welcome channel for new members.\n"
+            "`/birthday_announce_channel` - Set the channel where birthday messages are posted.\n"
+            "`/twitch_stream_channel` - Set the default channel for Twitch live notifications.\n"
+            "`/deadchat_trigger_channels` - Add a channel that counts for Dead Chat steals.\n"
+            "`/prize_announce_channel` - Set the channel where prize wins are announced.\n"
+            "`/prize_channel` - Set the channel where prize drops appear.\n"
+            "`/log_channel_members` - Set the member join/leave/ban/kick log channel.\n"
+            "`/log_channel_bots` - Set the bot join/leave/ban log channel.\n"
+            "`/auto_delete_channel` - Add a channel to the auto-delete system."
+        ),
+        inline=False,
+    )
 
-ROLES:
-`/active_member_role` - Set the role used for active members.
-`/birthday_role` - Set the role used to mark birthdays.
-`/deadchat_role` - Set the role given to the current Dead Chat holder.
-`/plague_role` - Set the role used for plague infections.
-`/member_join_role` - Set the role given to members after a short delay.
-`/bot_join_role` - Set the role given automatically to new bots.
+    embed.add_field(
+        name="ROLES",
+        value=(
+            "`/active_member_role` - Set the role used for active members.\n"
+            "`/birthday_role` - Set the role used to mark birthdays.\n"
+            "`/deadchat_role` - Set the role given to the current Dead Chat holder.\n"
+            "`/plague_role` - Set the role used for plague infections.\n"
+            "`/member_join_role` - Set the role given to members after a short delay.\n"
+            "`/bot_join_role` - Set the role given automatically to new bots."
+        ),
+        inline=False,
+    )
 
-TEXT & MESSAGES:
-`/birthday_msg` - Set the birthday announcement template text.
-`/twitch_msg` - Set the Twitch "went live" announcement template text.
-`/plague_msg` - Set the plague outbreak announcement text.
-`/sticky_message` - Set or clear a sticky message in this channel.
+    embed.add_field(
+        name="TEXT & MESSAGES",
+        value=(
+            "`/birthday_msg` - Set the birthday announcement template text.\n"
+            "`/twitch_msg` - Set the Twitch \"went live\" announcement template text.\n"
+            "`/plague_msg` - Set the plague outbreak announcement text.\n"
+            "`/sticky_message` - Set or clear a sticky message in this channel."
+        ),
+        inline=False,
+    )
 
-AUTO DELETE:
-`/auto_delete_delay` - Set how long messages last in auto-delete channels (seconds).
-`/auto_delete_filters` - Add a phrase that never gets auto-deleted.
+    embed.add_field(
+        name="AUTO DELETE",
+        value=(
+            "`/auto_delete_delay` - Set how long messages last in auto-delete channels (seconds).\n"
+            "`/auto_delete_filters` - Add a phrase that never gets auto-deleted."
+        ),
+        inline=False,
+    )
 
-TWITCH & ACTIVITY:
-`/twitch_channel` - Add a Twitch channel and where its live announcements go.
-`/active_member_role_add` - Mark a member as active right now (gives active role).
+    embed.add_field(
+        name="TWITCH & ACTIVITY",
+        value=(
+            "`/twitch_channel` - Add a Twitch channel and where its live announcements go.\n"
+            "`/active_member_role_add` - Mark a member as active right now (gives active role)."
+        ),
+        inline=False,
+    )
 
-PRIZES & DEADCHAT:
-`/prize_add` - Define a prize title and its drop rarity.
-`/prize_day` - Schedule or instantly drop a Dead Chat prize.
-`/prize_announce_send` - Manually announce a Dead Chat prize winner.
-`/prize_list` - View all scheduled Dead Chat prize drops.
-`/prize_delete` - Delete a scheduled prize drop by ID.
-`/plague_day` - Schedule a plague day; first Dead Chat steal gets infected.
-`/deadchat_scan` - Scan Dead Chat channels and refresh idle timestamps.
+    embed.add_field(
+        name="PRIZES & DEADCHAT",
+        value=(
+            "`/prize_add` - Define a prize title and its drop rarity.\n"
+            "`/prize_day` - Schedule or instantly drop a Dead Chat prize.\n"
+            "`/prize_announce_send` - Manually announce a Dead Chat prize winner.\n"
+            "`/prize_list` - View all scheduled Dead Chat prize drops.\n"
+            "`/prize_delete` - Delete a scheduled prize drop by ID.\n"
+            "`/plague_day` - Schedule a plague day; first Dead Chat steal gets infected.\n"
+            "`/deadchat_scan` - Scan Dead Chat channels and refresh idle timestamps."
+        ),
+        inline=False,
+    )
 
-UTILITY:
-`/send_msg` - Make the bot send a custom message in this channel.
-`/edit_msg` - Edit a bot message in this channel by ID.
-`/birthday_announce_send` - Manually send a birthday message for a member.
-    """.strip("\n")
+    embed.add_field(
+        name="UTILITY",
+        value=(
+            "`/send_msg` - Make the bot send a custom message in this channel.\n"
+            "`/edit_msg` - Edit a bot message in this channel by ID.\n"
+            "`/birthday_announce_send` - Manually send a birthday message for a member."
+        ),
+        inline=False,
+    )
 
-    await ctx.respond(text, ephemeral=True)
+    embed.set_footer(text="Admin-only • Use this as your full setup checklist")
 
-@bot.slash_command(
-    name="send_msg",
-    description="Make the bot send a custom message in this channel."
-)
-async def say(ctx, message: discord.Option(str, "Message to send", required=True)):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("You need Administrator.", ephemeral=True)
-    await ctx.channel.send(message.replace("\\n", "\n"))
-    await ctx.respond("Sent!", ephemeral=True)
-
-
-@bot.slash_command(
-    name="edit_msg",
-    description="Edit a bot message in this channel by ID."
-)
-async def editbotmsg(
-    ctx,
-    message_id: discord.Option(str, "Message ID", required=True),
-    line1: discord.Option(str, "Line 1 (optional)", required=False) = None,
-    line2: discord.Option(str, "Line 2 (optional)", required=False) = None,
-    line3: discord.Option(str, "Line 3 (optional)", required=False) = None,
-    line4: discord.Option(str, "Line 4 (optional)", required=False) = None,
-):
-    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
-        return await ctx.respond("Admin only.", ephemeral=True)
-    try:
-        msg_id_int = int(message_id)
-    except ValueError:
-        return await ctx.respond("Invalid message ID.", ephemeral=True)
-    try:
-        msg = await ctx.channel.fetch_message(msg_id_int)
-    except discord.NotFound:
-        return await ctx.respond("Message not found in this channel.", ephemeral=True)
-    except discord.Forbidden:
-        return await ctx.respond("I cannot access that message.", ephemeral=True)
-    except discord.HTTPException:
-        return await ctx.respond("Error fetching that message.", ephemeral=True)
-    if msg.author.id != bot.user.id:
-        return await ctx.respond("That message was not sent by me.", ephemeral=True)
-
-    existing_lines = msg.content.split("\n")
-    while len(existing_lines) < 4:
-        existing_lines.append("")
-
-    new_lines = [
-        line1 if line1 is not None else existing_lines[0],
-        line2 if line2 is not None else existing_lines[1],
-        line3 if line3 is not None else existing_lines[2],
-        line4 if line4 is not None else existing_lines[3],
-    ]
-    new_content = "\n".join(new_lines)
-
-    await msg.edit(content=new_content)
-    await ctx.respond("Message updated.", ephemeral=True)
-
+    # ephemeral=True = only the admin sees it. Remove ephemeral=True if you want it public.
+    await ctx.respond(embed=embed, ephemeral=True)
 
 @bot.slash_command(
     name="birthday_announce_send",
@@ -1913,7 +1897,6 @@ async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member"
     await ch.send(msg)
     await log_to_guild_bot_channel(guild, f"[BIRTHDAY] Manual birthday announce sent for {member.mention} by {ctx.author.mention}.")
     await ctx.respond(f"Sent birthday message for {member.mention}.", ephemeral=True)
-
 
 @bot.slash_command(
     name="active_member_role_add",
