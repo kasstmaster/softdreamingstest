@@ -26,13 +26,33 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 ############### GLOBAL STATE / STORAGE ###############
 
 ############### HELPER FUNCTIONS ###############
-async def db_heartbeat():
+GUILD_SETTINGS_SQL = """
+CREATE TABLE IF NOT EXISTS guild_settings (
+  guild_id BIGINT PRIMARY KEY,
+  active_role_id BIGINT NULL,
+  active_threshold_minutes INT NOT NULL DEFAULT 60,
+  deadchat_role_id BIGINT NULL,
+  deadchat_idle_minutes INT NOT NULL DEFAULT 30,
+  deadchat_requires_active BOOLEAN NOT NULL DEFAULT TRUE,
+  deadchat_cooldown_minutes INT NOT NULL DEFAULT 60,
+  plague_role_id BIGINT NULL,
+  plague_duration_hours INT NOT NULL DEFAULT 72,
+  prizes_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  timezone TEXT NOT NULL DEFAULT 'America/Los_Angeles',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+async def ensure_schema():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is missing")
     conn = await asyncpg.connect(DATABASE_URL)
+    await conn.execute("SET TIME ZONE 'UTC';")
+    await conn.execute(GUILD_SETTINGS_SQL)
     value = await conn.fetchval("SELECT 1;")
     await conn.close()
-    print("✅ Connected to Postgres, SELECT 1 returned:", value)
+    print("✅ Schema ensured, SELECT 1 returned:", value)
 
 ############### VIEWS / UI COMPONENTS ###############
 
@@ -46,5 +66,5 @@ async def db_heartbeat():
 
 ############### ON_READY & BOT START ###############
 if __name__ == "__main__":
-    asyncio.run(db_heartbeat())
+    asyncio.run(ensure_schema())
 
