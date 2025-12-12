@@ -1765,10 +1765,10 @@ async def setup(ctx):
     text = """
 SETUP COMMANDS:
 /add_channel_welcome
-/add_channel_birthday_announcement
-/add_channel_twitch_announcement
+/add_channel_birthday_announce
+/add_channel_twitch_announceme
 /add_channel_dead_chat_triggers
-/add_channel_prize_announcement
+/add_channel_prize_announce
 /add_channel_member_log
 /add_channel_bot_log
 /add_channel_prize_drop
@@ -1854,7 +1854,7 @@ async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member"
     text = cfg.get("birthday_text", DEFAULT_BIRTHDAY_TEXT)
     msg = text.replace("{mention}", member.mention)
     await ch.send(msg)
-    await log_to_guild_bot_channel(guild, f"[BIRTHDAY] Manual birthday announcement sent for {member.mention} by {ctx.author.mention}.")
+    await log_to_guild_bot_channel(guild, f"[BIRTHDAY] Manual birthday announce sent for {member.mention} by {ctx.author.mention}.")
     await ctx.respond(f"Sent birthday message for {member.mention}.", ephemeral=True)
 
 @bot.slash_command(name="activity_add", description="Mark a member as active right now")
@@ -1963,8 +1963,8 @@ async def prize_announce(ctx, member: discord.Option(discord.Member, required=Tr
         rarity=rarity
     )
     await ctx.channel.send(msg)
-    await log_to_guild_bot_channel(guild, f"[PRIZE] Manual prize announcement: {member.mention} → '{prize}' (rarity {rarity}) by {ctx.author.mention}.")
-    await ctx.respond("Announcement sent.", ephemeral=True)
+    await log_to_guild_bot_channel(guild, f"[PRIZE] Manual prize announce: {member.mention} → '{prize}' (rarity {rarity}) by {ctx.author.mention}.")
+    await ctx.respond("announce sent.", ephemeral=True)
 
 @bot.slash_command(name="sticky")
 async def sticky(ctx, action: discord.Option(str, choices=["set", "clear"], required=True), text: discord.Option(str, required=False)):
@@ -2052,15 +2052,15 @@ async def add_channel_welcome(ctx, channel: discord.Option(discord.TextChannel, 
     if cfg:
         await ctx.respond(f"Set welcome channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="add_channel_birthday_announcement")
-async def add_channel_birthday_announcement(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+@bot.slash_command(name="add_channel_birthday_announce")
+async def add_channel_birthday_announce(ctx, channel: discord.Option(discord.TextChannel, required=True)):
     updates = {"birthday_announce_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "birthday announce channel")
     if cfg:
         await ctx.respond(f"Set birthday announce channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="add_channel_twitch_announcement")
-async def add_channel_twitch_announcement(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+@bot.slash_command(name="add_channel_twitch_announce")
+async def add_channel_twitch_announce(ctx, channel: discord.Option(discord.TextChannel, required=True)):
     updates = {"twitch_announce_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "twitch announce channel")
     if cfg:
@@ -2079,8 +2079,8 @@ async def add_channel_dead_chat_triggers(ctx, channel: discord.Option(discord.Te
     if new_cfg:
         await ctx.respond(f"Added {channel.mention} to dead chat triggers.", ephemeral=True)
 
-@bot.slash_command(name="add_channel_prize_announcement")
-async def add_channel_prize_announcement(ctx, channel: discord.Option(discord.TextChannel, required=True)):
+@bot.slash_command(name="add_channel_prize_announce")
+async def add_channel_prize_announce(ctx, channel: discord.Option(discord.TextChannel, required=True)):
     updates = {"prize_announce_channel_id": channel.id}
     cfg = await _update_guild_config(ctx, updates, "prize announce channel")
     if cfg:
@@ -2194,7 +2194,7 @@ async def add_twitch_notification(ctx, twitch_channel: discord.Option(str, requi
     if notification_channel is None:
         announce_id = cfg.get("twitch_announce_channel_id", 0)
         if announce_id == 0:
-            await ctx.respond("Set default twitch announce channel first with /add_channel_twitch_announcement.", ephemeral=True)
+            await ctx.respond("Set default twitch announce channel first with /add_channel_twitch_announce.", ephemeral=True)
             return
     else:
         announce_id = notification_channel.id
