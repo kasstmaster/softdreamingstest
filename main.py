@@ -26,6 +26,21 @@ from discord.ext import commands
 DATABASE_URL = os.getenv("DATABASE_URL")
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 
+ACTIVE_MODE_CHOICES = [
+    discord.app_commands.Choice(name="Any message anywhere in the server", value="all"),
+    discord.app_commands.Choice(name="Messages only in configured channels", value="channels"),
+]
+
+ACTIVE_THRESHOLD_CHOICES = [
+    discord.app_commands.Choice(name="15 minutes", value=15),
+    discord.app_commands.Choice(name="30 minutes", value=30),
+    discord.app_commands.Choice(name="60 minutes", value=60),
+    discord.app_commands.Choice(name="120 minutes", value=120),
+    discord.app_commands.Choice(name="6 hours", value=360),
+    discord.app_commands.Choice(name="12 hours", value=720),
+    discord.app_commands.Choice(name="24 hours", value=1440),
+]
+
 ############### GLOBAL STATE / STORAGE ###############
 db_pool = None
 active_cleanup_task = None
@@ -269,9 +284,55 @@ async def active_cleanup_once():
             except Exception:
                 continue
 
+async def upsert_guild_setting_timezone(guild_id: int, timezone: str) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO guild_settings (guild_id, timezone, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (guild_id)
+            DO UPDATE SET timezone = EXCLUDED.timezone, updated_at = NOW();
+            """,
+            guild_id,
+            timezone,
+        )
+
+async def get_guild_timezone(guild_id: int) -> str:
+    async with db_pool.acquire() as conn:
+        value = await conn.fetchval(
+            "SELECT timezone FROM guild_settings WHERE guild_id = $1;",
+            guild_id,
+        )
+    return value or "America/Los_Angeles"
+
 ############### VIEWS / UI COMPONENTS ###############
 
 ############### AUTOCOMPLETE FUNCTIONS ###############
+async def timezone_autocomplete(interaction: discord.Interaction, current: str):
+    current_l = (current or "").lower()
+    common = [
+        "America/Los_Angeles",
+        "America/Denver",
+        "America/Chicago",
+        "America/New_York",
+        "America/Phoenix",
+        "America/Anchorage",
+        "Pacific/Honolulu",
+        "Europe/London",
+        "Europe/Paris",
+        "Europe/Berlin",
+        "Australia/Sydney",
+        "Asia/Tokyo",
+    ]
+    matches = []
+    for tz in common:
+        if current_l in tz.lower():
+            matches.append(discord.app_commands.Choice(name=tz, value=tz))
+        if len(matches) >= 25:
+            break
+    if matches:
+        return matches
+    return [discord.app_commands.Choice(name="America/Los_Angeles", value="America/Los_Angeles")]
 
 ############### BACKGROUND TASKS & SCHEDULERS ###############
 async def active_cleanup_loop():
@@ -330,27 +391,21 @@ async def active_clear_role(interaction: discord.Interaction):
     await set_active_role(guild_id, None)
     await interaction.response.send_message("✅ Active role cleared", ephemeral=True)
 
-@active_group.command(name="set_threshold", description="Set inactivity threshold in minutes")
-async def active_set_threshold(interaction: discord.Interaction, minutes: int):
+@active_group.command(name="set_threshold", description="Set inactivity threshold")
+@discord.app_commands.choices(minutes=ACTIVE_THRESHOLD_CHOICES)
+async def active_set_threshold(interaction: discord.Interaction, minutes: discord.app_commands.Choice[int]):
     guild_id = require_guild(interaction)
-    if minutes < 1 or minutes > 10080:
-        await interaction.response.send_message("❌ Minutes must be between 1 and 10080", ephemeral=True)
-        return
     await ensure_guild_row(guild_id)
-    await set_active_threshold(guild_id, minutes)
-    await interaction.response.send_message(f"✅ Active threshold set to {minutes} minute(s)", ephemeral=True)
+    await set_active_threshold(guild_id, minutes.value)
+    await interaction.response.send_message(f"✅ Active threshold set to {minutes.value} minute(s)", ephemeral=True)
 
-@active_group.command(name="set_mode", description="Set activity mode: all or channels")
-@discord.app_commands.describe(mode="all = any message anywhere, channels = only configured channels")
-async def active_set_mode(interaction: discord.Interaction, mode: str):
+@active_group.command(name="set_mode", description="Set activity mode")
+@discord.app_commands.choices(mode=ACTIVE_MODE_CHOICES)
+async def active_set_mode(interaction: discord.Interaction, mode: discord.app_commands.Choice[str]):
     guild_id = require_guild(interaction)
     await ensure_guild_row(guild_id)
-    try:
-        await set_active_mode(guild_id, mode)
-    except Exception:
-        await interaction.response.send_message("❌ Mode must be `all` or `channels`", ephemeral=True)
-        return
-    await interaction.response.send_message(f"✅ Activity mode set to `{mode.lower().strip()}`", ephemeral=True)
+    await set_active_mode(guild_id, mode.value)
+    await interaction.response.send_message(f"✅ Activity mode set to `{mode.value}`", ephemeral=True)
 
 @active_group.command(name="add_channel", description="Add a channel to count activity (channels mode)")
 async def active_add_channel(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -391,28 +446,18 @@ timezone_group = discord.app_commands.Group(name="timezone", description="Timezo
 
 @timezone_group.command(name="set", description="Set this server's timezone")
 @discord.app_commands.describe(tz="Example: America/Los_Angeles")
+@discord.app_commands.autocomplete(tz=timezone_autocomplete)
 async def tz_set(interaction: discord.Interaction, tz: str):
     guild_id = require_guild(interaction)
     await ensure_guild_row(guild_id)
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO guild_settings (guild_id, timezone, updated_at)
-            VALUES ($1, $2, NOW())
-            ON CONFLICT (guild_id)
-            DO UPDATE SET timezone = EXCLUDED.timezone, updated_at = NOW();
-            """,
-            guild_id,
-            tz,
-        )
+    await upsert_guild_setting_timezone(guild_id, tz)
     await interaction.response.send_message(f"✅ Timezone set to `{tz}`", ephemeral=True)
 
 @timezone_group.command(name="show", description="Show this server's timezone")
 async def tz_show(interaction: discord.Interaction):
     guild_id = require_guild(interaction)
-    async with db_pool.acquire() as conn:
-        value = await conn.fetchval("SELECT timezone FROM guild_settings WHERE guild_id = $1;", guild_id)
-    await interaction.response.send_message(f"⏰ Current timezone: `{value or 'America/Los_Angeles'}`", ephemeral=True)
+    tz = await get_guild_timezone(guild_id)
+    await interaction.response.send_message(f"⏰ Current timezone: `{tz}`", ephemeral=True)
 
 bot.tree.add_command(config_group)
 
