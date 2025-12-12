@@ -315,7 +315,7 @@ async def get_guild_config(guild: discord.Guild) -> dict | None:
 async def ensure_guild_config(guild: discord.Guild) -> dict:
     if db_pool is None:
         return {}
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     if cfg is not None:
         return cfg
     async with db_pool.acquire() as conn:
@@ -327,11 +327,11 @@ async def ensure_guild_config(guild: discord.Guild) -> dict:
             """,
             guild.id,
         )
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     return cfg or {}
 
 async def get_config_channel(guild: discord.Guild, key: str) -> TextChannel | None:
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     if not cfg:
         return None
     cid = cfg.get(key)
@@ -343,7 +343,7 @@ async def get_config_channel(guild: discord.Guild, key: str) -> TextChannel | No
     return None
 
 async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None:
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     if not cfg:
         return None
     rid = cfg.get(key)
@@ -395,7 +395,7 @@ async def flush_startup_logs():
     guild = bot.get_guild(DEBUG_GUILD_ID) or bot.guilds[0] if bot.guilds else None
     if not guild:
         return
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     channel = guild.get_channel(cfg.get("bot_log_channel_id")) if cfg else None
     if not channel:
         return
@@ -767,7 +767,7 @@ async def save_member_join_storage():
 
 async def trigger_plague_infection(member: discord.Member):
     guild = member.guild
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     infected_role_id = cfg.get("infected_role_id", 0)
     infected_role = guild.get_role(infected_role_id)
     if not infected_role or infected_role in member.roles:
@@ -810,7 +810,7 @@ async def check_plague_active(guild: discord.Guild):
     return False
 
 async def add_scheduled_prize(guild: discord.Guild, title: str, channel_id: int, content: str, date_str: str):
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     sch = cfg.get("prize_scheduled", [])
     existing_ids = [p.get("id", 0) for p in sch]
     new_id = max(existing_ids) + 1 if existing_ids else 1
@@ -829,7 +829,7 @@ async def add_scheduled_prize(guild: discord.Guild, title: str, channel_id: int,
 
 async def initialize_dead_chat():
     for guild in bot.guilds:
-        cfg = await get_guild_config(guild)
+        cfg = await ensure_guild_config(guild)
         dead_role_id = cfg.get("dead_chat_role_id", 0)
         if dead_role_id == 0:
             continue
@@ -844,7 +844,7 @@ async def initialize_dead_chat():
 
 async def handle_dead_chat_message(message: discord.Message):
     guild = message.guild
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     dead_role_id = cfg.get("dead_chat_role_id", 0)
     dead_channels = cfg.get("dead_chat_channel_ids", [])
     active_role_id = cfg.get("active_role_id", 0)
@@ -1168,7 +1168,7 @@ class BasePrizeView(discord.ui.View):
             await interaction.message.delete()
         except Exception as e:
             await log_exception("BasePrizeView_claim_button_delete", e)
-        cfg = await get_guild_config(guild)
+        cfg = await ensure_guild_config(guild)
         dead_role_id = cfg.get("dead_chat_role_id", 0)
         dead_role = guild.get_role(dead_role_id)
         role_mention = dead_role.mention if dead_role else "the Dead Chat role"
@@ -1211,7 +1211,7 @@ async def twitch_watcher():
                     twitch_live_state[name] = True
                     await save_twitch_state()
                     for guild in bot.guilds:
-                        cfg = await get_guild_config(guild)
+                        cfg = await ensure_guild_config(guild)
                         text = cfg.get("twitch_live_text", DEFAULT_TWITCH_LIVE_MESSAGE)
                         for tc in cfg.get("twitch_configs", []):
                             if tc["username"].lower() == name:
@@ -1233,7 +1233,7 @@ async def infected_watcher():
         try:
             now = datetime.utcnow()
             for guild in bot.guilds:
-                cfg = await get_guild_config(guild)
+                cfg = await ensure_guild_config(guild)
                 infected = cfg.get("infected_members", {})
                 expired_ids = []
                 for mid, ts in infected.items():
@@ -1288,7 +1288,7 @@ async def member_join_watcher():
                     guild = bot.get_guild(guild_id)
                     if not guild:
                         continue
-                    cfg = await get_guild_config(guild)
+                    cfg = await ensure_guild_config(guild)
                     member_role_id = cfg.get("member_join_role_id", 0)
                     if not member_role_id:
                         continue
@@ -1323,7 +1323,7 @@ async def activity_inactive_watcher():
             now = discord.utils.utcnow()
             cutoff = now - timedelta(days=INACTIVE_DAYS_THRESHOLD)
             for guild in bot.guilds:
-                cfg = await get_guild_config(guild)
+                cfg = await ensure_guild_config(guild)
                 active_role_id = cfg.get("active_role_id", 0)
                 if not active_role_id:
                     continue
@@ -1385,7 +1385,7 @@ async def on_ready():
         await initialize_dead_chat()
 
     for guild in bot.guilds:
-        cfg = await get_guild_config(guild)
+        cfg = await ensure_guild_config(guild)
         plague_scheduled[guild.id] = cfg.get("plague_scheduled", [])
         infected_members[guild.id] = cfg.get("infected_members", {})
         prize_defs[guild.id] = cfg.get("prize_defs", {})
@@ -1396,7 +1396,7 @@ async def on_ready():
 @bot.event
 async def on_member_update(before, after):
     guild = after.guild
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     ch = await get_config_channel(guild, "birthday_announce_channel_id") or await get_config_channel(guild, "welcome_channel_id")
     if not ch:
         return
@@ -1428,7 +1428,7 @@ async def on_message(message: discord.Message):
         sticky_messages[message.channel.id] = new_msg.id
         await save_stickies()
     guild = message.guild
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     auto_ids = cfg.get("auto_delete_channel_ids", [])
     if message.channel.id in auto_ids:
         content_lower = message.content.lower()
@@ -1447,7 +1447,7 @@ async def on_message(message: discord.Message):
 @bot.event
 async def on_member_join(member: discord.Member):
     guild = member.guild
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     ch = await get_config_channel(guild, "welcome_channel_id")
 
     if member.bot:
@@ -1552,6 +1552,11 @@ async def _update_guild_config(ctx, updates: dict, summary_label: str):
 
     cfg = await ensure_guild_config(ctx.guild)
     cfg.update(updates)
+
+    # keep in-memory cache in sync
+    global guild_configs
+    guild_configs[ctx.guild.id] = cfg
+
     await save_guild_config_storage()
     await save_guild_config_db(ctx.guild, cfg)
     await log_to_guild_bot_channel(ctx.guild, f"[CONFIG] {ctx.author.mention} updated {summary_label}.")
@@ -1842,7 +1847,7 @@ async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member"
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("You need Administrator.", ephemeral=True)
     guild = ctx.guild
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     ch = await get_config_channel(guild, "birthday_announce_channel_id") or await get_config_channel(guild, "welcome_channel_id")
     if not ch:
         return await ctx.respond("Announce channel not found.", ephemeral=True)
@@ -1903,6 +1908,9 @@ async def schedule_prize(
 ):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
+
+    guild = ctx.guild
+    
     cfg = await get_guild_config(ctx.guild)
     defs = cfg.get("prize_defs", {})
     rarity = defs.get(title)
@@ -1940,7 +1948,7 @@ async def prize_announce(ctx, member: discord.Option(discord.Member, required=Tr
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
     guild = ctx.guild
-    cfg = await get_guild_config(guild)
+    cfg = await ensure_guild_config(guild)
     rarity = cfg.get("prize_defs", {}).get(prize)
     if not rarity:
         return await ctx.respond("Prize not defined.", ephemeral=True)
