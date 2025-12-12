@@ -31,7 +31,6 @@ from datetime import datetime, timedelta
 from discord import TextChannel
 from discord.ui import Select
 from google.oauth2.service_account import Credentials
-from datetime import datetime
 
 
 ############### CONSTANTS & CONFIG ###############
@@ -161,7 +160,40 @@ async def init_db():
     db_pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5)
 
     async with db_pool.acquire() as conn:
-        # Sticky messages
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS guild_configs (
+            guild_id BIGINT PRIMARY KEY,
+            welcome_channel_id BIGINT DEFAULT 0,
+            birthday_role_id BIGINT DEFAULT 0,
+            member_join_role_id BIGINT DEFAULT 0,
+            bot_join_role_id BIGINT DEFAULT 0,
+            dead_chat_role_id BIGINT DEFAULT 0,
+            infected_role_id BIGINT DEFAULT 0,
+            active_role_id BIGINT DEFAULT 0,
+            dead_chat_channel_ids TEXT DEFAULT '[]',
+            auto_delete_channel_ids TEXT DEFAULT '[]',
+            mod_log_channel_id BIGINT DEFAULT 0,
+            bot_log_channel_id BIGINT DEFAULT 0,
+            prize_drop_channel_id BIGINT DEFAULT 0,
+            birthday_announce_channel_id BIGINT DEFAULT 0,
+            twitch_announce_channel_id BIGINT DEFAULT 0,
+            prize_announce_channel_id BIGINT DEFAULT 0,
+            auto_delete_delay_seconds INTEGER DEFAULT 0,
+            auto_delete_ignore_phrases TEXT DEFAULT '[]',
+            twitch_configs TEXT DEFAULT '[]',
+            prize_defs TEXT DEFAULT '{}',
+            prize_scheduled TEXT DEFAULT '[]',
+            plague_scheduled TEXT DEFAULT '[]',
+            infected_members TEXT DEFAULT '{}',
+            birthday_text TEXT,
+            twitch_live_text TEXT,
+            plague_outbreak_text TEXT,
+            deadchat_steal_text TEXT,
+            prize_announce_text TEXT,
+            prize_claim_text TEXT
+        );
+        """)
+
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS sticky_data (
             channel_id BIGINT PRIMARY KEY,
@@ -170,21 +202,155 @@ async def init_db():
         );
         """)
 
-        # QOTD settings (with optional ping role)
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS qotd_settings (
             guild_id BIGINT PRIMARY KEY,
-            channel_id BIGINT,
+            channel_id BIGINT DEFAULT 0,
             enabled BOOLEAN NOT NULL DEFAULT FALSE,
             ping_role_id BIGINT DEFAULT 0
         );
         """)
 
-        # Migration for older DBs that don't have ping_role_id yet
         await conn.execute("""
         ALTER TABLE qotd_settings
         ADD COLUMN IF NOT EXISTS ping_role_id BIGINT DEFAULT 0;
         """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS theme_settings (
+            guild_id BIGINT PRIMARY KEY,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            mode TEXT NOT NULL DEFAULT 'auto'
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS vc_role_links (
+            guild_id BIGINT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            role_id BIGINT NOT NULL,
+            PRIMARY KEY (guild_id, channel_id)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS birthdays (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            mm_dd TEXT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS birthday_public_messages (
+            guild_id BIGINT PRIMARY KEY,
+            channel_id BIGINT NOT NULL,
+            message_id BIGINT NOT NULL
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS deadchat_last_times (
+            channel_id BIGINT PRIMARY KEY,
+            last_time TIMESTAMPTZ NOT NULL
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS deadchat_state (
+            guild_id BIGINT PRIMARY KEY,
+            current_holders JSONB DEFAULT '{}'::jsonb,
+            last_win_times JSONB DEFAULT '{}'::jsonb,
+            notice_msg_ids JSONB DEFAULT '{}'::jsonb
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS twitch_state (
+            username TEXT PRIMARY KEY,
+            is_live BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS last_activity (
+            guild_id BIGINT NOT NULL,
+            member_id BIGINT NOT NULL,
+            last_seen TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (guild_id, member_id)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS member_join_queue (
+            guild_id BIGINT NOT NULL,
+            member_id BIGINT NOT NULL,
+            assign_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (guild_id, member_id)
+        );
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_claim_text TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_announce_text TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS deadchat_steal_text TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS plague_outbreak_text TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS twitch_live_text TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS birthday_text TEXT;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS infected_members TEXT DEFAULT '{}';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS plague_scheduled TEXT DEFAULT '[]';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_scheduled TEXT DEFAULT '[]';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_defs TEXT DEFAULT '{}';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS twitch_configs TEXT DEFAULT '[]';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS auto_delete_ignore_phrases TEXT DEFAULT '[]';
+        """)
+        
 
 async def get_theme_settings(guild_id: int) -> dict:
     """
@@ -438,32 +604,6 @@ async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None
         return None
     return guild.get_role(rid)
 
-async def ensure_guild_config(guild: discord.Guild) -> dict:
-    if db_pool is None or guild is None:
-        return {}
-
-    cfg = await get_guild_config(guild)
-
-    # If config exists (i.e., row exists), return it
-    # We tell existence by checking if the DB row existed!
-    async with db_pool.acquire() as conn:
-        exists = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM guild_configs WHERE guild_id=$1)", guild.id
-        )
-
-    if exists:
-        return cfg
-
-    # If row does NOT exist, insert it
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO guild_configs (guild_id) VALUES ($1) ON CONFLICT DO NOTHING",
-            guild.id
-        )
-
-    # load again after inserting
-    return await get_guild_config(guild)
-
 
 async def get_config_channel(guild: discord.Guild, key: str) -> discord.TextChannel | None:
     cfg = await ensure_guild_config(guild)
@@ -478,16 +618,6 @@ async def get_config_channel(guild: discord.Guild, key: str) -> discord.TextChan
     if isinstance(channel, discord.TextChannel):
         return channel
     return None
-
-async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None:
-    cfg = await ensure_guild_config(guild)
-    if not cfg:
-        return None
-    rid = cfg.get(key)
-    if not rid:
-        return None
-    return guild.get_role(rid)
-
 
 async def log_to_guild_mod_log(guild: discord.Guild, content: str):
     """Log moderation-related info to Railway logs only."""
@@ -2508,10 +2638,13 @@ async def on_member_remove(member: discord.Member):
         await log_to_guild_mod_log(guild, text)
 
 @bot.event
-async def on_application_command_error(ctx, error):
+async def on_application_command_error(interaction: discord.Interaction, error):
     await log_exception("application_command_error", error)
     try:
-        await ctx.respond("An internal error occurred.", ephemeral=True)
+        if interaction.response.is_done():
+            await interaction.followup.send("An internal error occurred.", ephemeral=True)
+        else:
+            await interaction.response.send_message("An internal error occurred.", ephemeral=True)
     except:
         pass
 
