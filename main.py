@@ -194,6 +194,36 @@ async def init_db():
         );
         """)
 
+                await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS birthday_announce_channel_id BIGINT DEFAULT 0;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS twitch_announce_channel_id BIGINT DEFAULT 0;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_announce_channel_id BIGINT DEFAULT 0;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT DEFAULT 0;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS mod_log_channel_id BIGINT DEFAULT 0;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS bot_log_channel_id BIGINT DEFAULT 0;
+        """)
+
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS sticky_data (
             channel_id BIGINT PRIMARY KEY,
