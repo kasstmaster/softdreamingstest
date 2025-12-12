@@ -7,9 +7,13 @@ import json
 import traceback
 import sys
 import asyncpg
+import random as pyrandom
+import gspread
 from datetime import datetime, timedelta
 from discord import TextChannel
 from discord.ui import Select
+from google.oauth2.service_account import Credentials
+from datetime import datetime
 
 
 ############### CONSTANTS & CONFIG ###############
@@ -23,6 +27,24 @@ bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
 
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
+
+GOOGLE_CREDS_RAW = os.getenv("GOOGLE_CREDENTIALS")
+SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+gc = None
+if GOOGLE_CREDS_RAW and SHEET_ID:
+    try:
+        creds_dict = json.loads(GOOGLE_CREDS_RAW)
+        creds = Credentials.from_service_account_info(
+            creds_dict,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        )
+        gc = gspread.authorize(creds)
+        print("QOTD: Google Sheets client initialized.")
+    except Exception as e:
+        print("QOTD init error:", repr(e))
+        traceback.print_exc()
+else:
+    print("QOTD disabled: missing GOOGLE_CREDENTIALS or GOOGLE_SHEET_ID")
 
 DELETE_DELAY_SECONDS = int(os.getenv("DELETE_DELAY_SECONDS", "3600"))
 INACTIVE_DAYS_THRESHOLD = int(os.getenv("INACTIVE_DAYS_THRESHOLD", "14"))
@@ -48,6 +70,29 @@ GAME_NOTIF_NO_CHANGES = "No changes."
 GAME_NOTIF_ADDED_PREFIX = "Added: "
 GAME_NOTIF_REMOVED_PREFIX = "Removed: "
 
+ICON_DEFAULT_URL = os.getenv("ICON_DEFAULT_URL", "")
+ICON_CHRISTMAS_URL = os.getenv("ICON_CHRISTMAS_URL", "")
+ICON_HALLOWEEN_URL = os.getenv("ICON_HALLOWEEN_URL", "")
+
+THEME_CHRISTMAS_ROLES = {
+    "Sandy Claws": "Admin",
+    "Grinch": "Original Member",
+    "Cranberry": "Member",
+    "Christmas": "Bots",
+}
+
+THEME_HALLOWEEN_ROLES = {
+    "Cauldron": "Admin",
+    "Candy": "Original Member",
+    "Witchy": "Member",
+    "Halloween": "Bots",
+}
+
+# For now, emojis are empty — can be filled later
+THEME_EMOJI_CONFIG = {
+    "christmas": {},
+    "halloween": {},
+}
 
 ############### GLOBAL STATE / STORAGE ###############
 guild_configs: dict[int, dict] = {}
@@ -98,7 +143,6 @@ async def init_db():
         );
         """)
 
-        # Member join queue (delayed member role)
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS member_join_queue (
             guild_id BIGINT,
@@ -108,7 +152,6 @@ async def init_db():
         );
         """)
 
-        # Dead Chat last timestamps
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS deadchat_last_times (
             channel_id BIGINT PRIMARY KEY,
@@ -116,7 +159,6 @@ async def init_db():
         );
         """)
 
-        # Dead Chat state (single row storing the JSON blobs)
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS deadchat_state (
             guild_id BIGINT PRIMARY KEY,
@@ -126,7 +168,6 @@ async def init_db():
         );
         """)
 
-        # Twitch live/offline cache
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS twitch_state (
             username TEXT PRIMARY KEY,
@@ -134,7 +175,40 @@ async def init_db():
         );
         """)
 
-        # Last activity per member
+                await conn.execute("""
+        CREATE TABLE IF NOT EXISTS birthdays (
+            guild_id BIGINT,
+            user_id BIGINT,
+            mm_dd TEXT NOT NULL,
+            PRIMARY KEY (guild_id, user_id)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS birthday_public_messages (
+            guild_id BIGINT PRIMARY KEY,
+            channel_id BIGINT,
+            message_id BIGINT
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS qotd_settings (
+            guild_id BIGINT PRIMARY KEY,
+            channel_id BIGINT,
+            enabled BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS vc_role_links (
+            guild_id BIGINT,
+            channel_id BIGINT,
+            role_id BIGINT,
+            PRIMARY KEY (guild_id, channel_id)
+        );
+        """)
+
         await conn.execute("""
         CREATE TABLE IF NOT EXISTS last_activity (
             guild_id BIGINT,
@@ -143,6 +217,86 @@ async def init_db():
             PRIMARY KEY (guild_id, member_id)
         );
         """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS vc_role_links (
+            guild_id BIGINT,
+            channel_id BIGINT,
+            role_id BIGINT,
+            PRIMARY KEY (guild_id, channel_id)
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS theme_settings (
+            guild_id BIGINT PRIMARY KEY,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            mode TEXT NOT NULL DEFAULT 'auto'  -- 'auto', 'none', 'halloween', 'christmas'
+        );
+        """)
+
+async def get_theme_settings(guild_id: int) -> dict:
+    """
+    Returns theme settings for a guild:
+    { 'enabled': bool, 'mode': 'auto'|'none'|'halloween'|'christmas' }
+    Defaults: enabled=True, mode='auto'
+    """
+    if db_pool is None:
+        return {"enabled": True, "mode": "auto"}
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT enabled, mode FROM theme_settings WHERE guild_id = $1",
+            guild_id,
+        )
+
+    if row is None:
+        return {"enabled": True, "mode": "auto"}
+
+    return {
+        "enabled": bool(row["enabled"]),
+        "mode": (row["mode"] or "auto"),
+    }
+
+
+async def set_theme_enabled(guild_id: int, enabled: bool):
+    if db_pool is None:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO theme_settings (guild_id, enabled, mode)
+            VALUES ($1, $2, 'auto')
+            ON CONFLICT (guild_id)
+            DO UPDATE SET enabled = EXCLUDED.enabled;
+            """,
+            guild_id,
+            enabled,
+        )
+
+
+async def set_theme_mode(guild_id: int, mode: str):
+    """
+    mode must be one of: 'auto', 'none', 'halloween', 'christmas'
+    """
+    if db_pool is None:
+        return
+    if mode not in ("auto", "none", "halloween", "christmas"):
+        # silently ignore bad values in case someone passes nonsense
+        return
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO theme_settings (guild_id, enabled, mode)
+            VALUES ($1, TRUE, $2)
+            ON CONFLICT (guild_id)
+            DO UPDATE SET mode = EXCLUDED.mode;
+            """,
+            guild_id,
+            mode,
+        )
+
 
 async def save_guild_config_db(guild: discord.Guild, cfg: dict):
     if db_pool is None:
@@ -710,6 +864,312 @@ async def save_member_join_storage():
                     assign_at,
                 )
 
+def build_mm_dd(month_name: str, day: int) -> str | None:
+    month_num = MONTH_TO_NUM.get(month_name)
+    if not month_num or not (1 <= day <= 31):
+        return None
+    return f"{month_num:02d}-{day:02d}"
+
+
+async def set_birthday(guild_id: int, user_id: int, mm_dd: str):
+    if db_pool is None:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO birthdays (guild_id, user_id, mm_dd)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, user_id) DO UPDATE SET mm_dd = EXCLUDED.mm_dd;
+            """,
+            guild_id,
+            user_id,
+            mm_dd,
+        )
+
+
+async def remove_birthday(guild_id: int, user_id: int) -> bool:
+    if db_pool is None:
+        return False
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM birthdays WHERE guild_id = $1 AND user_id = $2;",
+            guild_id,
+            user_id,
+        )
+    # result is like "DELETE 0" or "DELETE 1"
+    return result.split()[-1] != "0"
+
+async def get_guild_qotd_settings(guild_id: int):
+    if db_pool is None:
+        return None
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT channel_id, enabled FROM qotd_settings WHERE guild_id = $1",
+            guild_id,
+        )
+
+    if not row:
+        return None
+
+    return {
+        "channel_id": int(row["channel_id"]),
+        "enabled": row["enabled"],
+    }
+
+async def get_guild_vc_links(guild_id: int) -> dict[int, int]:
+    """
+    Returns {channel_id: role_id} for this guild.
+    """
+    if db_pool is None:
+        return {}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT channel_id, role_id FROM vc_role_links WHERE guild_id = $1",
+            guild_id,
+        )
+    return {int(r["channel_id"]): int(r["role_id"]) for r in rows}
+
+
+async def set_vc_role_link(guild_id: int, channel_id: int, role_id: int):
+    """
+    Link a voice channel to a role (join = add, leave = remove).
+    """
+    if db_pool is None:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO vc_role_links (guild_id, channel_id, role_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, channel_id)
+            DO UPDATE SET role_id = EXCLUDED.role_id;
+            """,
+            guild_id,
+            channel_id,
+            role_id,
+        )
+
+
+async def remove_vc_role_link(guild_id: int, channel_id: int) -> bool:
+    """
+    Remove the VC→role link for this channel.
+    Returns True if something was deleted.
+    """
+    if db_pool is None:
+        return False
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM vc_role_links WHERE guild_id = $1 AND channel_id = $2;",
+            guild_id,
+            channel_id,
+        )
+    # result is like "DELETE 0" or "DELETE 1"
+    return result.split()[-1] != "0"
+    
+
+async def get_qotd_sheet_and_tab():
+    """
+    Returns (worksheet, season_name) based on the current month.
+    Tabs supported: 'Regular', 'Fall Season', 'Christmas'
+    """
+    if gc is None or not SHEET_ID:
+        raise RuntimeError("QOTD is not configured (Google credentials or sheet id missing).")
+
+    sh = gc.open_by_key(SHEET_ID)
+    today = datetime.utcnow()
+
+    # Seasonal logic
+    if 10 <= today.month <= 11:
+        tab = "Fall Season"
+    elif today.month == 12:
+        tab = "Christmas"
+    else:
+        tab = "Regular"
+
+    # Try seasonal tab, fall back to first sheet
+    try:
+        ws = sh.worksheet(tab)
+    except gspread.WorksheetNotFound:
+        ws = sh.sheet1
+        tab = ws.title
+        print(f"QOTD: worksheet '{tab}' not found; using first sheet instead.")
+
+    return ws, tab
+
+
+async def get_question_of_the_day() -> str | None:
+    """
+    Pull an unused QOTD from the Google Sheet, mark it as used, and return it.
+    Automatically switches seasonal tabs.
+    """
+    worksheet, season = await get_qotd_sheet_and_tab()
+
+    all_vals = worksheet.get_all_values()
+    if len(all_vals) < 2:
+        print("QOTD: Sheet empty or missing questions.")
+        return None
+
+    # Skip header
+    questions = all_vals[1:]
+    unused = []
+
+    for row in questions:
+        # Normalize rows to 2 columns minimum
+        row += [""] * (2 - len(row))
+
+        status_a = row[0].strip()
+        status_b = row[1].strip()
+        question_text = row[1].strip() or row[0].strip()
+
+        # Add to unused list if unused & not blank
+        if question_text and (not status_a or not status_b):
+            unused.append(row)
+
+    if not unused:
+        print("QOTD: All questions used; resetting sheet.")
+        worksheet.update("A2:B", [[""] * 2 for _ in range(len(questions))])
+        unused = questions
+
+    chosen = pyrandom.choice(unused)
+    chosen += [""] * (2 - len(chosen))
+    question = chosen[1].strip() or chosen[0].strip()
+
+    if not question:
+        print("QOTD: Chosen row empty, skipping.")
+        return None
+
+    # Mark used
+    row_idx = questions.index(chosen) + 2  # +2 → header offset
+    status_col = "A" if chosen[1].strip() else "B"
+
+    try:
+        worksheet.update(
+            f"{status_col}{row_idx}",
+            [[f"Used {datetime.utcnow().strftime('%Y-%m-%d')}"]]
+        )
+    except Exception as e:
+        print("QOTD: Failed marking used:", repr(e))
+
+    return question
+
+async def post_daily_qotd():
+    """Pulls the daily QOTD from Google Sheets and posts to all servers."""
+    try:
+        question = await get_question_of_the_day()
+        if not question:
+            print("No QOTD available.")
+            return
+    except Exception as e:
+        await log_exception("QOTD Google Sheets Fetch Error", e)
+        return
+
+    for guild in bot.guilds:
+        try:
+            settings = await get_guild_qotd_settings(guild.id)
+            if not settings or not settings["enabled"]:
+                continue
+
+            channel = guild.get_channel(settings["channel_id"])
+            if not channel:
+                continue
+
+            embed = discord.Embed(
+                title="❓ Question of the Day",
+                description=question,
+                color=discord.Color.gold(),
+            )
+
+            await channel.send(embed=embed)
+
+        except Exception as e:
+            await log_exception(f"post_daily_qotd guild {guild.id}", e)
+
+
+async def get_guild_birthdays(guild_id: int) -> dict[str, str]:
+    if db_pool is None:
+        return {}
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT user_id, mm_dd FROM birthdays WHERE guild_id = $1;",
+            guild_id,
+        )
+    return {str(r["user_id"]): r["mm_dd"] for r in rows}
+
+
+async def get_birthday_public_location(guild_id: int) -> tuple[int, int] | None:
+    if db_pool is None:
+        return None
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT channel_id, message_id FROM birthday_public_messages WHERE guild_id = $1;",
+            guild_id,
+        )
+    if row:
+        return int(row["channel_id"]), int(row["message_id"])
+    return None
+
+
+async def set_birthday_public_location(guild_id: int, channel_id: int, message_id: int):
+    if db_pool is None:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO birthday_public_messages (guild_id, channel_id, message_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id) DO UPDATE
+            SET channel_id = EXCLUDED.channel_id,
+                message_id = EXCLUDED.message_id;
+            """,
+            guild_id,
+            channel_id,
+            message_id,
+        )
+
+
+async def build_birthday_embed(guild: discord.Guild) -> discord.Embed:
+    birthdays = await get_guild_birthdays(guild.id)
+    lines: list[str] = []
+
+    for user_id, mm_dd in sorted(birthdays.items(), key=lambda x: x[1]):
+        member = guild.get_member(int(user_id))
+        if member:
+            lines.append(f"{member.mention} — `{mm_dd}`")
+        else:
+            lines.append(f"<@{user_id}> — `{mm_dd}`")
+
+    description = "\n".join(lines) if lines else "No birthdays yet!"
+    description += (
+        "\n\n**SHARE YOUR BIRTHDAY**\n"
+        "• </birthday_set:0> - Add your birthday to the server’s shared birthday list."
+    )
+
+    embed = discord.Embed(
+        title="OUR BIRTHDAYS!",
+        description=description,
+        color=discord.Color.blurple(),
+    )
+    embed.set_footer(text="Messages in this channel may auto-delete after a while.")
+    return embed
+
+
+async def update_birthday_list_message(guild: discord.Guild):
+    loc = await get_birthday_public_location(guild.id)
+    if not loc:
+        return
+    ch_id, msg_id = loc
+    channel = guild.get_channel(ch_id)
+    if not channel or not isinstance(channel, discord.TextChannel):
+        return
+    try:
+        msg = await channel.fetch_message(msg_id)
+        embed = await build_birthday_embed(guild)
+        await msg.edit(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+    except Exception as e:
+        await log_exception("update_birthday_list_message", e)
+
+
 async def trigger_plague_infection(member: discord.Member):
     guild = member.guild
     cfg = await ensure_guild_config(guild)
@@ -1127,6 +1587,162 @@ async def touch_member_activity(member: discord.Member):
             await log_exception("touch_member_activity_add_role", e)
 
 
+# ---------- THEME HELPERS ----------
+
+def find_role_by_name(guild: discord.Guild, name: str) -> discord.Role | None:
+    name_lower = name.lower()
+    for role in guild.roles:
+        if role.name.lower() == name_lower:
+            return role
+    return None
+
+
+async def clear_theme_roles(guild: discord.Guild) -> list[str]:
+    removed: list[str] = []
+    seasonal_names = set(THEME_CHRISTMAS_ROLES.keys()) | set(THEME_HALLOWEEN_ROLES.keys())
+
+    for role in guild.roles:
+        if role.name in seasonal_names:
+            for member in guild.members:
+                if role in member.roles:
+                    try:
+                        await member.remove_roles(role, reason="Seasonal theme clear")
+                        if role.name not in removed:
+                            removed.append(role.name)
+                    except Exception as e:
+                        await log_exception("clear_theme_roles", e)
+
+    return removed
+
+
+async def apply_theme_roles(guild: discord.Guild, mapping: dict[str, str]) -> list[str]:
+    added: list[str] = []
+
+    for seasonal_name, base_name in mapping.items():
+        base_role = find_role_by_name(guild, base_name)
+        if not base_role:
+            continue
+
+        seasonal_role = find_role_by_name(guild, seasonal_name)
+        if not seasonal_role:
+            try:
+                seasonal_role = await guild.create_role(
+                    name=seasonal_name,
+                    reason="Creating seasonal theme role",
+                )
+            except Exception as e:
+                await log_exception("apply_theme_roles_create", e)
+                continue
+
+        for member in guild.members:
+            if base_role in member.roles and seasonal_role not in member.roles:
+                try:
+                    await member.add_roles(seasonal_role, reason="Seasonal theme")
+                except Exception as e:
+                    await log_exception("apply_theme_roles_add", e)
+
+        added.append(seasonal_name)
+
+    return added
+
+
+async def apply_theme_icon(guild: discord.Guild, url: str | None):
+    if not url:
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    img_bytes = await resp.read()
+                    await guild.edit(icon=img_bytes, reason="Seasonal theme icon")
+    except Exception as e:
+        await log_exception("apply_theme_icon", e)
+
+async def apply_theme_for_today_with_mode(
+    guild: discord.Guild,
+    today: str | None = None,
+    mode: str = "auto",
+):
+    """
+    Wrapper that respects manual mode overrides.
+
+    mode:
+      - 'auto'       -> use date-based seasonal choice (your existing logic)
+      - 'none'       -> clear roles/emojis and revert to default
+      - 'halloween'  -> force halloween
+      - 'christmas'  -> force christmas
+    """
+    if today is None:
+        from datetime import datetime
+        today = datetime.utcnow().strftime("%m-%d")
+
+    # 'none' means just clear everything and revert
+    if mode == "none":
+        removed_roles = await clear_theme_roles(guild)
+        removed_emojis = await clear_theme_emojis(guild)
+        await apply_icon_to_bot_and_server(guild, ICON_DEFAULT_URL)
+        await log_to_thread(
+            f"theme_update guild={guild.id} today={today} mode=none "
+            f"roles_cleared={removed_roles} emojis_cleared={removed_emojis} roles_added=0 emojis_added=0"
+        )
+        return "none", removed_roles, removed_emojis, 0, 0
+
+    # Manual forced modes
+    if mode == "halloween":
+        removed_roles = await clear_theme_roles(guild)
+        removed_emojis = await clear_theme_emojis(guild)
+        added_roles = await apply_theme_roles(guild, "halloween")
+        added_emojis = await apply_theme_emojis(guild, "halloween")
+        await log_to_thread(
+            f"theme_update guild={guild.id} today={today} mode=halloween-forced "
+            f"roles_cleared={removed_roles} emojis_cleared={removed_emojis} "
+            f"roles_added={added_roles} emojis_added={added_emojis}"
+        )
+        return "halloween", removed_roles, removed_emojis, added_roles, added_emojis
+
+    if mode == "christmas":
+        removed_roles = await clear_theme_roles(guild)
+        removed_emojis = await clear_theme_emojis(guild)
+        added_roles = await apply_theme_roles(guild, "christmas")
+        added_emojis = await apply_theme_emojis(guild, "christmas")
+        await log_to_thread(
+            f"theme_update guild={guild.id} today={today} mode=christmas-forced "
+            f"roles_cleared={removed_roles} emojis_cleared={removed_emojis} "
+            f"roles_added={added_roles} emojis_added={added_emojis}"
+        )
+        return "christmas", removed_roles, removed_emojis, added_roles, added_emojis
+
+    # Fallback: 'auto' (or unknown): use your existing auto logic
+    mode, removed_roles, removed_emojis, added_roles, added_emojis = await apply_theme_for_today(guild, today)
+    return mode, removed_roles, removed_emojis, added_roles, added_emojis
+
+async def apply_theme_for_today(guild: discord.Guild, mm_dd: str) -> tuple[str, list[str], list[str]]:
+    month_str, _ = mm_dd.split("-")
+    month = int(month_str)
+
+    if month == 10:
+        mode = "halloween"
+    elif month == 12:
+        mode = "christmas"
+    else:
+        mode = "none"
+
+    removed_roles = await clear_theme_roles(guild)
+    added_roles: list[str] = []
+
+    if mode == "halloween":
+        added_roles = await apply_theme_roles(guild, THEME_HALLOWEEN_ROLES)
+        await apply_theme_icon(guild, ICON_HALLOWEEN_URL or ICON_DEFAULT_URL)
+    elif mode == "christmas":
+        added_roles = await apply_theme_roles(guild, THEME_CHRISTMAS_ROLES)
+        await apply_theme_icon(guild, ICON_CHRISTMAS_URL or ICON_DEFAULT_URL)
+    else:
+        await apply_theme_icon(guild, ICON_DEFAULT_URL)
+
+    return mode, removed_roles, added_roles
+
+
 ############### VIEWS / UI COMPONENTS ###############
 class BasePrizeView(discord.ui.View):
     gift_title: str = ""
@@ -1236,6 +1852,7 @@ def make_features_embed(self) -> discord.Embed:
         value=(
             "• `/send_msg` — send a custom bot message\n"
             "• `/edit_msg` — edit existing bot messages"
+            "• `/theme_update` — force-refresh today's seasonal theme"
         ),
         inline=False,
     )
@@ -1328,6 +1945,7 @@ def make_features_embed(self) -> discord.Embed:
             value=(
                 "> `/send_msg` - Make the bot send a message.\n"
                 "> `/edit_msg` - Edit a bot message.\n"
+                "> `/theme_update` - Force-refresh today's theme.\n"
                 "> `/birthday_announce_send` - Send a birthday message."
             ),
             inline=False,
@@ -1381,6 +1999,94 @@ def make_features_embed(self) -> discord.Embed:
 
 
 ############### BACKGROUND TASKS & SCHEDULERS ###############
+async def qotd_scheduler():
+    """Posts the daily QOTD to every guild that has QOTD enabled."""
+    await bot.wait_until_ready()
+
+    TARGET_HOUR_UTC = 16      # <-- CHANGE THIS IF NEEDED
+    TARGET_MINUTE = 0
+
+    already_ran = False
+
+    while not bot.is_closed():
+        now = datetime.utcnow()
+
+        # Trigger at the exact minute
+        if now.hour == TARGET_HOUR_UTC and now.minute == TARGET_MINUTE:
+            if not already_ran:
+                await post_daily_qotd()
+                already_ran = True
+        else:
+            already_ran = False
+
+        await asyncio.sleep(30)
+
+async def theme_scheduler():
+    await bot.wait_until_ready()
+    TARGET_HOUR_UTC = 9
+    TARGET_MINUTE = 0
+    while not bot.is_closed():
+        now = datetime.utcnow()
+        if now.hour == TARGET_HOUR_UTC and now.minute == TARGET_MINUTE:
+            today = now.strftime("%m-%d")
+            for guild in bot.guilds:
+                try:
+                    settings = await get_theme_settings(guild.id)
+                    if not settings["enabled"]:
+                        continue
+                    mode = settings["mode"]
+                    await apply_theme_for_today_with_mode(guild, today, mode)
+                except Exception as e:
+                    await log_exception(f"theme_scheduler_guild_{guild.id}", e)
+            await asyncio.sleep(61)
+        await asyncio.sleep(30)
+
+async def birthday_checker():
+    """Runs once a day and gives/removes the birthday role for each guild."""
+    await bot.wait_until_ready()
+
+    TARGET_HOUR_UTC = 15   # same time as your old bot
+    TARGET_MINUTE = 0
+
+    while not bot.is_closed():
+        now = datetime.utcnow()
+
+        if now.hour == TARGET_HOUR_UTC and now.minute == TARGET_MINUTE:
+            today = now.strftime("%m-%d")
+
+            for guild in bot.guilds:
+                try:
+                    cfg = await ensure_guild_config(guild)
+                    birthday_role_id = cfg.get("birthday_role_id")
+                    if not birthday_role_id:
+                        continue
+
+                    role = guild.get_role(birthday_role_id)
+                    if not role:
+                        continue
+
+                    birthdays = await get_guild_birthdays(guild.id)
+
+                    for member in guild.members:
+                        mm_dd = birthdays.get(str(member.id))
+
+                        # Give role if today is their birthday
+                        if mm_dd == today:
+                            if role not in member.roles:
+                                await member.add_roles(role, reason="Birthday!")
+                        # Remove role if their birthday is over
+                        else:
+                            if role in member.roles:
+                                await member.remove_roles(role, reason="Birthday over")
+
+                except Exception as e:
+                    await log_exception(f"birthday_checker_guild_{guild.id}", e)
+
+            # wait a bit so we don't trigger twice in the same minute
+            await asyncio.sleep(61)
+
+        await asyncio.sleep(30)
+
 async def twitch_watcher():
     await bot.wait_until_ready()
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
@@ -1544,10 +2250,9 @@ async def on_ready():
 
     global startup_logging_done, startup_log_buffer
 
-    # Initialize Dead Chat holders / timestamps based on loaded config
     await initialize_dead_chat()
 
-    for guild in bot.guilds:
+        for guild in bot.guilds:
         cfg = await ensure_guild_config(guild)
         plague_scheduled[guild.id] = cfg.get("plague_scheduled", [])
         infected_members[guild.id] = cfg.get("infected_members", {})
@@ -1555,6 +2260,10 @@ async def on_ready():
         scheduled_prizes[guild.id] = cfg.get("prize_scheduled", [])
         for tc in cfg.get("twitch_configs", []):
             all_twitch_channels.add(tc["username"].lower())
+
+    bot.loop.create_task(qotd_scheduler())
+    bot.loop.create_task(theme_scheduler())
+    bot.loop.create_task(birthday_checker())
 
 @bot.event
 async def on_member_update(before, after):
@@ -1612,6 +2321,57 @@ async def on_message(message: discord.Message):
                     await log_exception("auto_delete_delete_later", e)
 
             bot.loop.create_task(delete_later())
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    """
+    VC Role System:
+    - When a member joins a linked VC, they get the configured role.
+    - When they leave / move away from that VC, the role is removed.
+    - Supports multiple VC→role links per guild.
+    """
+    guild = member.guild
+    if guild is None:
+        return
+    if member.bot:
+        # If you want bots to get VC roles too, remove this line.
+        return
+
+    links = await get_guild_vc_links(guild.id)
+    if not links:
+        return
+
+    # For each configured VC link, make sure the member's roles match
+    # whether they are currently in that specific VC.
+    for channel_id, role_id in links.items():
+        role = guild.get_role(role_id)
+        if not role:
+            continue
+
+        in_this_vc = after.channel is not None and after.channel.id == channel_id
+        has_role = role in member.roles
+
+        # Joined that VC → ensure they have the role
+        if in_this_vc and not has_role:
+            try:
+                await member.add_roles(role, reason="VC role link - joined voice channel")
+                await log_to_guild_bot_channel(
+                    guild,
+                    f"[VC-ROLE] Gave {role.mention} to {member.mention} for joining <#{channel_id}>."
+                )
+            except Exception as e:
+                await log_exception("on_voice_state_update_add_vc_role", e)
+
+        # Not in that VC → ensure they do NOT have the role
+        elif not in_this_vc and has_role:
+            try:
+                await member.remove_roles(role, reason="VC role link - left voice channel")
+                await log_to_guild_bot_channel(
+                    guild,
+                    f"[VC-ROLE] Removed {role.mention} from {member.mention} (no longer in <#{channel_id}>)."
+                )
+            except Exception as e:
+                await log_exception("on_voice_state_update_remove_vc_role", e)
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -1861,6 +2621,295 @@ async def send_msg(
             await ctx.respond("Failed to send message.", ephemeral=True)
         except:
             pass
+
+@bot.slash_command(
+    name="birthday_set",
+    description="Share your birthday with the server."
+)
+async def birthday_set(
+    ctx,
+    month: discord.Option(str, choices=MONTH_CHOICES),
+    day: discord.Option(int),
+):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+
+    mm_dd = build_mm_dd(month, day)
+    if not mm_dd:
+        return await ctx.respond("Invalid date.", ephemeral=True)
+
+    await set_birthday(ctx.guild.id, ctx.author.id, mm_dd)
+    await update_birthday_list_message(ctx.guild)
+    await ctx.respond(f"Birthday set to `{mm_dd}`!", ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_set_for",
+    description="Admin: add or change a member's birthday."
+)
+async def birthday_set_for(
+    ctx,
+    member: discord.Member,
+    month: discord.Option(str, choices=MONTH_CHOICES),
+    day: discord.Option(int),
+):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    mm_dd = build_mm_dd(month, day)
+    if not mm_dd:
+        return await ctx.respond("Invalid date.", ephemeral=True)
+
+    await set_birthday(ctx.guild.id, member.id, mm_dd)
+    await update_birthday_list_message(ctx.guild)
+    await ctx.respond(f"Set {member.mention}'s birthday to `{mm_dd}`.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_remove",
+    description="Admin: remove a member's birthday."
+)
+async def birthday_remove(
+    ctx,
+    member: discord.Member,
+):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    removed = await remove_birthday(ctx.guild.id, member.id)
+    if removed:
+        await update_birthday_list_message(ctx.guild)
+        await ctx.respond(f"Removed birthday for {member.mention}.", ephemeral=True)
+    else:
+        await ctx.respond("No birthday found for that member.", ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_list",
+    description="View the server’s birthday list."
+)
+async def birthday_list(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+
+    embed = await build_birthday_embed(ctx.guild)
+    await ctx.respond(embed=embed, ephemeral=True)
+
+
+@bot.slash_command(
+    name="birthday_public",
+    description="Create or refresh the public birthday list message in this channel."
+)
+async def birthday_public(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("Use this in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    embed = await build_birthday_embed(ctx.guild)
+    loc = await get_birthday_public_location(ctx.guild.id)
+
+    if loc:
+        ch_id, msg_id = loc
+        channel = ctx.guild.get_channel(ch_id)
+        if channel:
+            try:
+                msg = await channel.fetch_message(msg_id)
+                await msg.edit(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+                return await ctx.respond("Updated the existing public birthday list message.", ephemeral=True)
+            except Exception:
+                pass
+
+    msg = await ctx.channel.send(embed=embed)
+    await set_birthday_public_location(ctx.guild.id, ctx.channel.id, msg.id)
+    await ctx.respond("Created a new public birthday list message in this channel.", ephemeral=True)
+
+@bot.slash_command(
+    name="qotd_set_channel",
+    description="Admin: Choose which channel the daily QOTD will post in."
+)
+async def qotd_set_channel(
+    ctx,
+    channel: discord.Option(discord.TextChannel, "Select channel for QOTD"),
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO qotd_settings (guild_id, channel_id, enabled)
+            VALUES ($1, $2, TRUE)
+            ON CONFLICT (guild_id) DO UPDATE SET channel_id = EXCLUDED.channel_id
+            """,
+            ctx.guild.id,
+            channel.id,
+        )
+
+    await ctx.respond(f"QOTD will now post daily in {channel.mention}.", ephemeral=True)
+
+@bot.slash_command(name="qotd_enable", description="Enable daily QOTD for this server.")
+async def qotd_enable(ctx):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO qotd_settings (guild_id, channel_id, enabled)
+            VALUES ($1, 0, TRUE)
+            ON CONFLICT (guild_id) DO UPDATE SET enabled = TRUE
+            """,
+            ctx.guild.id,
+        )
+
+    await ctx.respond("QOTD enabled!", ephemeral=True)
+
+
+@bot.slash_command(name="qotd_disable", description="Disable daily QOTD for this server.")
+async def qotd_disable(ctx):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO qotd_settings (guild_id, channel_id, enabled)
+            VALUES ($1, 0, FALSE)
+            ON CONFLICT (guild_id) DO UPDATE SET enabled = FALSE
+            """,
+            ctx.guild.id,
+        )
+
+    await ctx.respond("QOTD disabled.", ephemeral=True)
+
+@bot.slash_command(
+    name="theme_enable",
+    description="Enable the automatic seasonal theme system for this server."
+)
+async def theme_enable(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("This can only be used in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    await set_theme_enabled(ctx.guild.id, True)
+    await ctx.respond(
+        "Seasonal themes are now **enabled** for this server.\n"
+        "They will update daily according to the configured mode (default: `auto`).",
+        ephemeral=True,
+    )
+
+@bot.slash_command(
+    name="theme_disable",
+    description="Disable the automatic seasonal theme system for this server."
+)
+async def theme_disable(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("This can only be used in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    await set_theme_enabled(ctx.guild.id, False)
+    await ctx.respond(
+        "Seasonal themes are now **disabled** for this server.\n"
+        "The scheduler will not change icons, roles, or emojis automatically.",
+        ephemeral=True,
+    )
+
+@bot.slash_command(
+    name="theme_mode",
+    description="Set the seasonal theme mode for this server."
+)
+async def theme_mode(
+    ctx,
+    mode: discord.Option(
+        str,
+        "How themes should behave",
+        choices=["auto", "none", "halloween", "christmas"],
+    ),
+):
+    if ctx.guild is None:
+        return await ctx.respond("This can only be used in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    await set_theme_mode(ctx.guild.id, mode)
+
+    if mode == "auto":
+        msg = (
+            "Theme mode set to **auto**.\n"
+            "🎃 October → Halloween\n"
+            "🎄 December → Christmas\n"
+            "📘 All other dates → Default"
+        )
+    elif mode == "none":
+        msg = (
+            "Theme mode set to **none**.\n"
+            "The scheduler will clear theme roles/emojis and keep the default icon."
+        )
+    elif mode == "halloween":
+        msg = (
+            "Theme mode set to **halloween**.\n"
+            "The scheduler will keep applying Halloween roles/emojis/icons, even outside October."
+        )
+    else:  # christmas
+        msg = (
+            "Theme mode set to **christmas**.\n"
+            "The scheduler will keep applying Christmas roles/emojis/icons, even outside December."
+        )
+
+    await ctx.respond(msg, ephemeral=True)
+
+@bot.slash_command(
+    name="theme_update",
+    description="Recheck the theme for this server using its saved settings."
+)
+async def theme_update(ctx):
+    if ctx.guild is None:
+        return await ctx.respond("This can only be used in a server.", ephemeral=True)
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    await ctx.defer(ephemeral=True)
+
+    settings = await get_theme_settings(ctx.guild.id)
+    if not settings["enabled"]:
+        return await ctx.followup.send(
+            "Theme system is currently **disabled** for this server. "
+            "Use `/theme_enable` to turn it back on.",
+            ephemeral=True,
+        )
+
+    today = datetime.utcnow().strftime("%m-%d")
+    mode, removed_roles, removed_emojis, added_roles, added_emojis = await apply_theme_for_today_with_mode(
+        ctx.guild,
+        today,
+        settings["mode"],
+    )
+
+    if mode == "halloween":
+        label = "🎃 Halloween theme applied."
+    elif mode == "christmas":
+        label = "🎄 Christmas theme applied."
+    elif mode == "none":
+        label = "🎨 Theme cleared and reverted to default."
+    else:
+        label = "🍂 Auto theme applied based on today’s date."
+
+    summary = (
+        f"{label}\n"
+        f"Roles cleared: `{removed_roles}`\n"
+        f"Emojis cleared: `{removed_emojis}`\n"
+        f"Roles added: `{added_roles}`\n"
+        f"Emojis added: `{added_emojis}`\n"
+        f"Mode: `{settings['mode']}`"
+    )
+    await ctx.followup.send(summary, ephemeral=True)
 
 
 @bot.slash_command(name="edit_msg", description="Edit a bot message in this channel (up to 4 lines)")
@@ -2335,6 +3384,93 @@ async def add_role_birthday(
     cfg = await _update_guild_config(ctx, updates, "birthday role")
     if cfg:
         await ctx.respond(f"Set birthday role to {role.mention}", ephemeral=True)
+
+@bot.slash_command(
+    name="vc_role_link",
+    description="Link a voice channel to a role (join = add, leave = remove)."
+)
+async def vc_role_link(
+    ctx,
+    channel: discord.Option(discord.VoiceChannel, "Voice channel to link", required=True),
+    role: discord.Option(discord.Role, "Role to give while in this VC", required=True),
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    await set_vc_role_link(ctx.guild.id, channel.id, role.id)
+    await ctx.respond(
+        f"Linked voice channel {channel.mention} → role {role.mention}. "
+        f"Members will get this role while in that VC.",
+        ephemeral=True,
+    )
+    await log_to_guild_bot_channel(
+        ctx.guild,
+        f"[VC-ROLE] {ctx.author.mention} linked VC {channel.mention} to role {role.mention}."
+    )
+
+@bot.slash_command(
+    name="vc_role_unlink",
+    description="Remove the VC→role link for a voice channel."
+)
+async def vc_role_unlink(
+    ctx,
+    channel: discord.Option(discord.VoiceChannel, "Voice channel to unlink", required=True),
+):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    removed = await remove_vc_role_link(ctx.guild.id, channel.id)
+    if removed:
+        await ctx.respond(
+            f"Unlinked VC {channel.mention} from its role mapping.",
+            ephemeral=True,
+        )
+        await log_to_guild_bot_channel(
+            ctx.guild,
+            f"[VC-ROLE] {ctx.author.mention} unlinked VC {channel.mention}."
+        )
+    else:
+        await ctx.respond(
+            "There was no VC role link for that channel.",
+            ephemeral=True,
+        )
+
+@bot.slash_command(
+    name="vc_role_list",
+    description="Show all voice-channel role links for this server."
+)
+async def vc_role_list(ctx):
+    if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    links = await get_guild_vc_links(ctx.guild.id)
+    if not links:
+        return await ctx.respond("No VC role links are configured for this server.", ephemeral=True)
+
+    lines = []
+    for channel_id, role_id in links.items():
+        ch = ctx.guild.get_channel(channel_id)
+        role = ctx.guild.get_role(role_id)
+        ch_label = ch.mention if ch else f"<#{channel_id}> (missing)"
+        role_label = role.mention if role else f"<@&{role_id}> (missing)"
+        lines.append(f"{ch_label} → {role_label}")
+
+    text = "\n".join(lines)
+    if len(text) > 1900:
+        text = text[:1900] + "\n...[truncated]"
+
+    embed = discord.Embed(
+        title="VC Role Links",
+        description=text,
+        color=discord.Color.blurple(),
+    )
+    await ctx.respond(embed=embed, ephemeral=True)
 
 
 @bot.slash_command(
