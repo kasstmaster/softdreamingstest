@@ -314,14 +314,15 @@ async def get_guild_config(guild: discord.Guild) -> dict | None:
 
 async def ensure_guild_config(guild: discord.Guild) -> dict:
     if db_pool is None:
+        # No database → just return an empty config so commands don't crash
         return {}
 
-    # First try to load from DB
+    # First, try to load from DB
     cfg = await get_guild_config(guild)
     if cfg is not None:
         return cfg
 
-    # If not present, insert a blank row
+    # If no row exists yet, insert a blank one
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
