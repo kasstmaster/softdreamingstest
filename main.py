@@ -101,36 +101,56 @@ async def init_db():
     db_pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5)
     async with db_pool.acquire() as conn:
         await conn.execute("""
-        CREATE TABLE IF NOT EXISTS guild_configs (
+        CREATE TABLE IF NOT EXISTS sticky_data (
+            channel_id BIGINT PRIMARY KEY,
+            text TEXT,
+            message_id BIGINT
+        );
+        """)
+
+        # Member join queue (delayed member role)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS member_join_queue (
+            guild_id BIGINT,
+            member_id BIGINT,
+            assign_at TIMESTAMPTZ,
+            PRIMARY KEY (guild_id, member_id)
+        );
+        """)
+
+        # Dead Chat last timestamps
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS deadchat_last_times (
+            channel_id BIGINT PRIMARY KEY,
+            last_time TIMESTAMPTZ
+        );
+        """)
+
+        # Dead Chat state (single row storing the JSON blobs)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS deadchat_state (
             guild_id BIGINT PRIMARY KEY,
-            welcome_channel_id BIGINT,
-            birthday_role_id BIGINT,
-            member_join_role_id BIGINT,
-            bot_join_role_id BIGINT,
-            dead_chat_role_id BIGINT,
-            infected_role_id BIGINT,
-            active_role_id BIGINT,
-            dead_chat_channel_ids TEXT,
-            auto_delete_channel_ids TEXT,
-            mod_log_channel_id BIGINT,
-            bot_log_channel_id BIGINT,
-            prize_drop_channel_id BIGINT,
-            birthday_announce_channel_id BIGINT,
-            twitch_announce_channel_id BIGINT,
-            prize_announce_channel_id BIGINT,
-            auto_delete_delay_seconds INT,
-            auto_delete_ignore_phrases TEXT,
-            twitch_configs TEXT,
-            prize_defs TEXT,
-            prize_scheduled TEXT,
-            plague_scheduled TEXT,
-            infected_members TEXT,
-            birthday_text TEXT,
-            twitch_live_text TEXT,
-            plague_outbreak_text TEXT,
-            deadchat_steal_text TEXT,
-            prize_announce_text TEXT,
-            prize_claim_text TEXT
+            current_holders JSONB,
+            last_win_times JSONB,
+            notice_msg_ids JSONB
+        );
+        """)
+
+        # Twitch live/offline cache
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS twitch_state (
+            username TEXT PRIMARY KEY,
+            is_live BOOLEAN
+        );
+        """)
+
+        # Last activity per member
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS last_activity (
+            guild_id BIGINT,
+            member_id BIGINT,
+            last_seen TIMESTAMPTZ,
+            PRIMARY KEY (guild_id, member_id)
         );
         """)
 
@@ -152,9 +172,11 @@ async def init_guild_config_storage():
         guild_configs = {}
         await log_to_bot_channel(f"init_guild_config_storage failed: {e}")
 
-async def save_guild_config_storage():
-    if STORAGE_CHANNEL_ID == 0 or guild_config_storage_message_id is None:
-        return
+async def init_guild_config_storage():
+    """Postgres-only mode: nothing to load from Discord storage."""
+    global guild_configs, guild_config_storage_message_id
+    guild_configs = {}
+    guild_config_storage_message_id = None
     ch = bot.get_channel(STORAGE_CHANNEL_ID)
     if not ch or not isinstance(ch, TextChannel):
         return
@@ -313,16 +335,16 @@ async def get_guild_config(guild: discord.Guild) -> dict | None:
     return data
 
 async def ensure_guild_config(guild: discord.Guild) -> dict:
-    if db_pool is None:
-        # No database → just return an empty config so commands don't crash
+    """Return this guild's config, creating an empty row in Postgres if needed."""
+    if db_pool is None or guild is None:
         return {}
 
-    # First, try to load from DB
+    # First try to load from DB
     cfg = await get_guild_config(guild)
     if cfg is not None:
         return cfg
 
-    # If no row exists yet, insert a blank one
+    # If missing, insert a bare row, then load again
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
@@ -333,7 +355,6 @@ async def ensure_guild_config(guild: discord.Guild) -> dict:
             guild.id,
         )
 
-    # Load again
     cfg = await get_guild_config(guild)
     return cfg or {}
 
@@ -532,62 +553,53 @@ async def run_all_inits_with_logging():
         "DEADCHAT_STATE": True,
         "TWITCH_STATE": True,
         "MEMBERJOIN": True,
-        "CONFIG": True,
+        "ACTIVITY": True,
     }
-    try:
-        await init_guild_config_storage()
-        if guild_config_storage_message_id is None:
-            storage["CONFIG"] = False
-            problems.append("CONFIG_DATA storage missing; run /config_init to create it.")
-    except Exception as e:
-        storage["CONFIG"] = False
-        problems.append("init_guild_config_storage failed; guild configs could not be loaded.")
-        await log_exception("init_guild_config_storage", e)
+
+    # DB-backed storage initializers
     try:
         await init_sticky_storage()
-        if sticky_storage_message_id is None:
-            storage["STICKY"] = False
-            problems.append("STICKY_DATA storage missing; run /sticky_init to create it.")
     except Exception as e:
         storage["STICKY"] = False
-        problems.append("init_sticky_storage failed; sticky messages could not be loaded.")
+        problems.append("init_sticky_storage failed; sticky messages could not be loaded from Postgres.")
         await log_exception("init_sticky_storage", e)
+
     try:
         await init_deadchat_storage()
-        if deadchat_storage_message_id is None:
-            storage["DEADCHAT"] = False
-            problems.append("DEADCHAT_DATA storage missing; run /deadchat_init to create it.")
     except Exception as e:
         storage["DEADCHAT"] = False
-        problems.append("init_deadchat_storage failed; Dead Chat timestamps could not be loaded.")
+        problems.append("init_deadchat_storage failed; Dead Chat timestamps could not be loaded from Postgres.")
         await log_exception("init_deadchat_storage", e)
+
     try:
         await init_deadchat_state_storage()
-        if deadchat_state_storage_message_id is None:
-            storage["DEADCHAT_STATE"] = False
-            problems.append("DEADCHAT_STATE storage missing; run /deadchat_state_init to create it.")
     except Exception as e:
         storage["DEADCHAT_STATE"] = False
-        problems.append("init_deadchat_state_storage failed; Dead Chat state could not be loaded.")
+        problems.append("init_deadchat_state_storage failed; Dead Chat state could not be loaded from Postgres.")
         await log_exception("init_deadchat_state_storage", e)
+
     try:
         await init_twitch_state_storage()
-        if twitch_state_storage_message_id is None:
-            storage["TWITCH_STATE"] = False
-            problems.append("TWITCH_STATE storage missing; run /twitch_state_init to create it.")
     except Exception as e:
         storage["TWITCH_STATE"] = False
-        problems.append("init_twitch_state_storage failed; Twitch live state could not be loaded.")
+        problems.append("init_twitch_state_storage failed; Twitch live state could not be loaded from Postgres.")
         await log_exception("init_twitch_state_storage", e)
+
     try:
         await init_member_join_storage()
-        if member_join_storage_message_id is None:
-            storage["MEMBERJOIN"] = False
-            problems.append("MEMBERJOIN_DATA storage missing; run /memberjoin_init to create it.")
     except Exception as e:
         storage["MEMBERJOIN"] = False
-        problems.append("init_member_join_storage failed; pending member joins could not be loaded.")
+        problems.append("init_member_join_storage failed; pending member joins could not be loaded from Postgres.")
         await log_exception("init_member_join_storage", e)
+
+    try:
+        await init_last_activity_storage()
+    except Exception as e:
+        storage["ACTIVITY"] = False
+        problems.append("init_last_activity_storage failed; last activity could not be loaded from Postgres.")
+        await log_exception("init_last_activity_storage", e)
+
+    # Runtime system checks (permissions, roles, etc.)
     try:
         runtime_problems, runtime_results = await check_runtime_systems()
         problems.extend(runtime_problems)
@@ -601,33 +613,18 @@ async def run_all_inits_with_logging():
         }
         problems.append("Runtime system checks failed; see logs for details.")
         await log_exception("check_runtime_systems", e)
+
+    # Build summary text
     lines = []
     lines.append("")
     lines.append("[STORAGE]")
-    if storage["STICKY"]:
-        lines.append("`✅` Sticky storage")
-    else:
-        lines.append("`⚠️` **Sticky storage** — STICKY_DATA storage message is missing or unreadable, so sticky messages cannot be loaded or saved.")
-    if storage["DEADCHAT"]:
-        lines.append("`✅` Dead Chat storage")
-    else:
-        lines.append("`⚠️` **Dead Chat storage** — DEADCHAT_DATA storage message is missing or unreadable, so Dead Chat idle timestamps cannot be persisted.")
-    if storage["DEADCHAT_STATE"]:
-        lines.append("`✅` Dead Chat state")
-    else:
-        lines.append("`⚠️` **Dead Chat state** — DEADCHAT_STATE storage message is missing or unreadable, so current holder and state cannot be persisted.")
-    if storage["MEMBERJOIN"]:
-        lines.append("`✅` Member-join storage")
-    else:
-        lines.append("`⚠️` **Member-join storage** — MEMBERJOIN_DATA storage message is missing or unreadable, so delayed member roles cannot be persisted.")
-    if storage["TWITCH_STATE"]:
-        lines.append("`✅` Twitch state storage")
-    else:
-        lines.append("`⚠️` **Twitch state storage** — TWITCH_STATE storage message is missing or unreadable, so Twitch live/offline state cannot be persisted.")
-    if storage["CONFIG"]:
-        lines.append("`✅` Guild config storage")
-    else:
-        lines.append("`⚠️` **Guild config storage** — CONFIG_DATA storage message is missing or unreadable, so per-guild setup cannot be persisted.")
+    lines.append("`✅` Sticky storage (Postgres)" if storage["STICKY"] else "`⚠️` **Sticky storage** — Failed to load from Postgres.")
+    lines.append("`✅` Dead Chat storage (Postgres)" if storage["DEADCHAT"] else "`⚠️` **Dead Chat storage** — Failed to load from Postgres.")
+    lines.append("`✅` Dead Chat state (Postgres)" if storage["DEADCHAT_STATE"] else "`⚠️` **Dead Chat state** — Failed to load from Postgres.")
+    lines.append("`✅` Member-join storage (Postgres)" if storage["MEMBERJOIN"] else "`⚠️` **Member-join storage** — Failed to load from Postgres.")
+    lines.append("`✅` Twitch state storage (Postgres)" if storage["TWITCH_STATE"] else "`⚠️` **Twitch state storage** — Failed to load from Postgres.")
+    lines.append("`✅` Activity storage (Postgres)" if storage["ACTIVITY"] else "`⚠️` **Activity storage** — Failed to load from Postgres.")
+
     lines.append("")
     lines.append("[RUNTIME CONFIG]")
     if runtime_results.get("CHANNELS", False):
@@ -650,6 +647,7 @@ async def run_all_inits_with_logging():
         lines.append("`✅` Twitch config and announce channel")
     else:
         lines.append("`⚠️` **Twitch config and announce channel** — Twitch client ID/secret or announce channel is misconfigured, so live notifications cannot be sent.")
+
     if problems:
         lines.append("")
         lines.append("[DETAILS]")
@@ -658,10 +656,12 @@ async def run_all_inits_with_logging():
     else:
         lines.append("")
         lines.append("All systems passed basic storage and runtime checks.")
+
     text = "\n".join(lines)
     if len(text) > 1900:
         text = text[:1900]
     await log_to_bot_channel(text)
+
     if problems:
         await log_to_bot_channel(f"[STARTUP] {len(problems)} problems detected, see report above.")
     else:
@@ -686,79 +686,94 @@ async def find_storage_message(prefix: str) -> discord.Message | None:
     return None
 
 async def init_sticky_storage():
-    global sticky_storage_message_id
-    if STORAGE_CHANNEL_ID == 0:
+    global sticky_storage_message_id  # kept only so code compiles, but unused now
+    sticky_storage_message_id = None
+
+    if db_pool is None:
         return
-    msg = await find_storage_message("STICKY_DATA:")
-    if not msg:
-        return
-    sticky_storage_message_id = msg.id
-    data_str = msg.content[len("STICKY_DATA:"):]
-    if not data_str.strip():
-        return
-    try:
-        data = json.loads(data_str)
-        sticky_texts.clear()
-        sticky_messages.clear()
-        for cid_str, info in data.items():
-            try:
-                cid = int(cid_str)
-                if info.get("text"):
-                    sticky_texts[cid] = info["text"]
-                if info.get("message_id"):
-                    sticky_messages[cid] = info["message_id"]
-            except:
-                continue
-        await log_to_bot_channel(f"[STICKY] Loaded {len(sticky_texts)} sticky entries from storage.")
-    except Exception as e:
-        await log_to_bot_channel(f"Failed to load sticky data: {e}")
+
+    sticky_texts.clear()
+    sticky_messages.clear()
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT channel_id, text, message_id FROM sticky_data")
+
+    for row in rows:
+        cid = row["channel_id"]
+        if row["text"]:
+            sticky_texts[cid] = row["text"]
+        if row["message_id"]:
+            sticky_messages[cid] = row["message_id"]
+
+    await log_to_bot_channel(f"[STICKY] Loaded {len(sticky_texts)} sticky entries from Postgres.")
 
 async def save_stickies():
-    if STORAGE_CHANNEL_ID == 0 or sticky_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        return
-    try:
-        msg = await ch.fetch_message(sticky_storage_message_id)
-        data = {}
-        for cid, text in sticky_texts.items():
-            entry = {"text": text}
-            if cid in sticky_messages:
-                entry["message_id"] = sticky_messages[cid]
-            data[str(cid)] = entry
-        await msg.edit(content="STICKY_DATA:" + json.dumps(data))
-    except Exception as e:
-        await log_exception("save_stickies", e)
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("TRUNCATE sticky_data")
+            for cid, text in sticky_texts.items():
+                mid = sticky_messages.get(cid)
+                await conn.execute(
+                    "INSERT INTO sticky_data (channel_id, text, message_id) VALUES ($1, $2, $3)",
+                    cid,
+                    text,
+                    mid,
+                )
 
 async def init_member_join_storage():
     global member_join_storage_message_id, pending_member_joins
-    msg = await find_storage_message("MEMBERJOIN_DATA:")
-    if not msg:
+    member_join_storage_message_id = None  # no Discord message in DB mode
+
+    if db_pool is None:
         return
-    member_join_storage_message_id = msg.id
-    raw = msg.content[len("MEMBERJOIN_DATA:"):]
-    try:
-        data = json.loads(raw or "[]")
-        if isinstance(data, list):
-            pending_member_joins[:] = data
-        else:
-            pending_member_joins[:] = []
-        await log_to_bot_channel(f"[MEMBERJOIN] Loaded {len(pending_member_joins)} pending entries from storage.")
-    except Exception:
-        pending_member_joins[:] = []
+
+    pending_member_joins = []
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT guild_id, member_id, assign_at FROM member_join_queue"
+        )
+
+    for row in rows:
+        assign_at = row["assign_at"]
+        pending_member_joins.append(
+            {
+                "guild_id": row["guild_id"],
+                "member_id": row["member_id"],
+                "assign_at": assign_at.isoformat() + "Z",
+            }
+        )
+
+    await log_to_bot_channel(
+        f"[MEMBERJOIN] Loaded {len(pending_member_joins)} pending entries from Postgres."
+    )
 
 async def save_member_join_storage():
-    if STORAGE_CHANNEL_ID == 0 or member_join_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        return
-    try:
-        msg = await ch.fetch_message(member_join_storage_message_id)
-        await msg.edit(content="MEMBERJOIN_DATA:" + json.dumps(pending_member_joins))
-    except Exception as e:
-        await log_exception("save_member_join_storage", e)
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("TRUNCATE member_join_queue")
+            for entry in pending_member_joins:
+                guild_id = entry.get("guild_id")
+                member_id = entry.get("member_id")
+                assign_at_str = entry.get("assign_at")
+                if not (guild_id and member_id and assign_at_str):
+                    continue
+                try:
+                    assign_at = datetime.fromisoformat(assign_at_str.replace("Z", ""))
+                except Exception:
+                    continue
+                await conn.execute(
+                    "INSERT INTO member_join_queue (guild_id, member_id, assign_at) VALUES ($1, $2, $3)",
+                    guild_id,
+                    member_id,
+                    assign_at,
+                )
 
 async def trigger_plague_infection(member: discord.Member):
     guild = member.guild
@@ -934,127 +949,143 @@ async def handle_dead_chat_message(message: discord.Message):
 
 async def init_deadchat_storage():
     global deadchat_storage_message_id, deadchat_last_times
-    msg = await find_storage_message("DEADCHAT_DATA:")
-    if not msg:
+    deadchat_storage_message_id = None  # no Discord message
+
+    if db_pool is None:
         return
-    deadchat_storage_message_id = msg.id
-    raw = msg.content[len("DEADCHAT_DATA:"):]
-    if not raw.strip():
-        deadchat_last_times.clear()
-        return
-    data = json.loads(raw)
+
     deadchat_last_times.clear()
-    for cid_str, ts in data.items():
-        try:
-            deadchat_last_times[int(cid_str)] = ts
-        except:
-            pass
-    await log_to_bot_channel(f"[DEADCHAT] Loaded timestamps for {len(deadchat_last_times)} channel(s).")
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT channel_id, last_time FROM deadchat_last_times")
+
+    for row in rows:
+        cid = row["channel_id"]
+        ts = row["last_time"]
+        deadchat_last_times[cid] = ts.isoformat() + "Z"
+
+    await log_to_bot_channel(
+        f"[DEADCHAT] Loaded timestamps for {len(deadchat_last_times)} channel(s) from Postgres."
+    )
 
 async def save_deadchat_storage():
-    global deadchat_storage_message_id
-    if STORAGE_CHANNEL_ID == 0 or deadchat_storage_message_id is None:
-        await log_to_bot_channel("save_deadchat_storage: storage id missing")
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        await log_to_bot_channel("save_deadchat_storage: storage channel invalid")
-        return
-    try:
-        msg = await ch.fetch_message(deadchat_storage_message_id)
-        await msg.edit(content="DEADCHAT_DATA:" + json.dumps(deadchat_last_times))
-    except discord.Forbidden:
-        await log_to_bot_channel("DEADCHAT_DATA: Bot missing 'Manage Messages' in storage channel")
-    except discord.NotFound:
-        await log_to_bot_channel("DEADCHAT_DATA message deleted — Run /deadchat_init")
-        deadchat_storage_message_id = None
-    except Exception as e:
-        await log_to_bot_channel(f"Deadchat save failed: {e}")
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("TRUNCATE deadchat_last_times")
+            for cid, ts_str in deadchat_last_times.items():
+                try:
+                    dt = datetime.fromisoformat(ts_str.replace("Z", ""))
+                except Exception:
+                    continue
+                await conn.execute(
+                    "INSERT INTO deadchat_last_times (channel_id, last_time) VALUES ($1, $2)",
+                    cid,
+                    dt,
+                )
 
 async def init_deadchat_state_storage():
     global deadchat_state_storage_message_id
-    msg = await find_storage_message("DEADCHAT_STATE:")
-    if not msg:
-        return
-    deadchat_state_storage_message_id = msg.id
+    deadchat_state_storage_message_id = None  # no Discord message
     await load_deadchat_state()
 
 async def load_deadchat_state():
-    global dead_last_win_time, dead_last_notice_message_ids
-    global dead_current_holders
-    if not deadchat_state_storage_message_id or STORAGE_CHANNEL_ID == 0:
+    global dead_last_win_time, dead_last_notice_message_ids, dead_current_holders
+
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch:
+
+    dead_current_holders = {}
+    dead_last_win_time = {}
+    dead_last_notice_message_ids = {}
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT current_holders, last_win_times, notice_msg_ids FROM deadchat_state WHERE guild_id = 0"
+        )
+
+    if not row:
         return
+
     try:
-        msg = await ch.fetch_message(deadchat_state_storage_message_id)
-        raw = msg.content[len("DEADCHAT_STATE:"):]
-        if not raw.strip():
-            return
-        data = json.loads(raw)
-        dead_current_holders = {int(k): v for k, v in data.get("current_holders", {}).items()}
-        dead_last_win_time = {}
-        for k, v in data.get("last_win_times", {}).items():
-            try:
-                dead_last_win_time[int(k)] = datetime.fromisoformat(v.replace("Z", ""))
-            except:
-                pass
-        dead_last_notice_message_ids = {int(k): v for k, v in data.get("notice_msg_ids", {}).items() if v}
-    except Exception as e:
-        await log_to_bot_channel(f"Failed to load DEADCHAT_STATE: {e}")
+        ch_json = row["current_holders"] or {}
+        lw_json = row["last_win_times"] or {}
+        nm_json = row["notice_msg_ids"] or {}
+    except Exception:
+        return
+
+    dead_current_holders = {int(k): v for k, v in ch_json.items()}
+
+    for k, v in lw_json.items():
+        try:
+            dead_last_win_time[int(k)] = datetime.fromisoformat(v.replace("Z", ""))
+        except Exception:
+            pass
+
+    dead_last_notice_message_ids = {
+        int(k): v for k, v in nm_json.items() if v
+    }
 
 async def save_deadchat_state():
-    if STORAGE_CHANNEL_ID == 0 or deadchat_state_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        return
+
     data = {
         "current_holders": {str(k): v for k, v in dead_current_holders.items()},
-        "last_win_times": {str(k): v.isoformat() + "Z" for k, v in dead_last_win_time.items()},
-        "notice_msg_ids": {str(k): v for k, v in dead_last_notice_message_ids.items()}
+        "last_win_times": {
+            str(k): v.isoformat() + "Z" for k, v in dead_last_win_time.items()
+        },
+        "notice_msg_ids": {str(k): v for k, v in dead_last_notice_message_ids.items()},
     }
-    try:
-        msg = await ch.fetch_message(deadchat_state_storage_message_id)
-        await msg.edit(content="DEADCHAT_STATE:" + json.dumps(data))
-    except Exception as e:
-        await log_to_bot_channel(f"Deadchat state save failed: {e}")
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO deadchat_state (guild_id, current_holders, last_win_times, notice_msg_ids)
+            VALUES (0, $1, $2, $3)
+            ON CONFLICT (guild_id) DO UPDATE SET
+                current_holders = EXCLUDED.current_holders,
+                last_win_times = EXCLUDED.last_win_times,
+                notice_msg_ids = EXCLUDED.notice_msg_ids
+            """,
+            data["current_holders"],
+            data["last_win_times"],
+            data["notice_msg_ids"],
+        )
 
 async def init_twitch_state_storage():
     global twitch_state_storage_message_id
-    msg = await find_storage_message("TWITCH_STATE:")
-    if not msg:
-        return
-    twitch_state_storage_message_id = msg.id
+    twitch_state_storage_message_id = None  # no Discord message
     await load_twitch_state()
-    await log_to_bot_channel(f"[TWITCH] State storage initialized with id {twitch_state_storage_message_id}.")
+    await log_to_bot_channel("[TWITCH] State storage initialized from Postgres.")
 
 async def load_twitch_state():
     global twitch_live_state
-    if not twitch_state_storage_message_id:
+
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    try:
-        msg = await ch.fetch_message(twitch_state_storage_message_id)
-        loaded = json.loads(msg.content[len("TWITCH_STATE:"):])
-        twitch_live_state = {k.lower(): bool(v) for k, v in loaded.items()}
-        await log_to_bot_channel(f"[TWITCH] Loaded live state for {len(twitch_live_state)} channel(s).")
-    except Exception as e:
-        await log_exception("load_twitch_state", e)
-        twitch_live_state = {}
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT username, is_live FROM twitch_state")
+
+    twitch_live_state = {row["username"].lower(): bool(row["is_live"]) for row in rows}
+    await log_to_bot_channel(f"[TWITCH] Loaded live state for {len(twitch_live_state)} channel(s) from Postgres.")
 
 async def save_twitch_state():
-    if STORAGE_CHANNEL_ID == 0 or twitch_state_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch:
-        return
-    try:
-        msg = await ch.fetch_message(twitch_state_storage_message_id)
-        await msg.edit(content="TWITCH_STATE:" + json.dumps(twitch_live_state))
-    except Exception as e:
-        await log_exception("save_twitch_state", e)
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("TRUNCATE twitch_state")
+            for name, is_live in twitch_live_state.items():
+                await conn.execute(
+                    "INSERT INTO twitch_state (username, is_live) VALUES ($1, $2)",
+                    name,
+                    is_live,
+                )
 
 async def get_twitch_token():
     global twitch_access_token
@@ -1096,35 +1127,48 @@ async def fetch_twitch_streams():
 
 async def init_last_activity_storage():
     global last_activity_storage_message_id, last_activity
-    msg = await find_storage_message("ACTIVITY_DATA:")
-    if not msg:
-        return
-    last_activity_storage_message_id = msg.id
-    raw = msg.content[len("ACTIVITY_DATA:"):]
-    if not raw.strip():
+    last_activity_storage_message_id = None  # no Discord message
+
+    if db_pool is None:
         last_activity = {}
         return
-    try:
-        data = json.loads(raw)
-        last_activity = {int(gid): {int(mid): ts for mid, ts in act.items()} for gid, act in data.items()}
-        await log_to_bot_channel(f"[ACTIVITY] Loaded last activity for {sum(len(act) for act in last_activity.values())} member(s) across {len(last_activity)} guild(s).")
-    except Exception as e:
-        await log_to_bot_channel(f"init_last_activity_storage failed: {e}")
-        last_activity = {}
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT guild_id, member_id, last_seen FROM last_activity"
+        )
+
+    last_activity = {}
+    for row in rows:
+        gid = row["guild_id"]
+        mid = row["member_id"]
+        ts = row["last_seen"].isoformat() + "Z"
+        last_activity.setdefault(gid, {})[mid] = ts
+
+    total_members = sum(len(act) for act in last_activity.values())
+    await log_to_bot_channel(
+        f"[ACTIVITY] Loaded last activity for {total_members} member(s) across {len(last_activity)} guild(s) from Postgres."
+    )
 
 async def save_last_activity_storage():
-    global last_activity_storage_message_id
-    if STORAGE_CHANNEL_ID == 0 or last_activity_storage_message_id is None:
+    if db_pool is None:
         return
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not ch or not isinstance(ch, TextChannel):
-        return
-    try:
-        msg = await ch.fetch_message(last_activity_storage_message_id)
-        payload = {str(gid): {str(mid): ts for mid, ts in act.items()} for gid, act in last_activity.items()}
-        await msg.edit(content="ACTIVITY_DATA:" + json.dumps(payload))
-    except Exception as e:
-        await log_to_bot_channel(f"save_last_activity_storage failed: {e}")
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("TRUNCATE last_activity")
+            for gid, members in last_activity.items():
+                for mid, ts_str in members.items():
+                    try:
+                        dt = datetime.fromisoformat(ts_str.replace("Z", ""))
+                    except Exception:
+                        continue
+                    await conn.execute(
+                        "INSERT INTO last_activity (guild_id, member_id, last_seen) VALUES ($1, $2, $3)",
+                        gid,
+                        mid,
+                        dt,
+                    )
 
 async def touch_member_activity(member: discord.Member):
     if member.bot:
@@ -1355,29 +1399,8 @@ async def on_ready():
 
     global startup_logging_done, startup_log_buffer
 
-    await init_last_activity_storage()
-
-    bot.loop.create_task(twitch_watcher())
-    bot.loop.create_task(infected_watcher())
-    bot.loop.create_task(member_join_watcher())
-    bot.loop.create_task(activity_inactive_watcher())
-
-    await log_to_bot_channel("[TWITCH] watcher started.")
-    await log_to_bot_channel("[PLAGUE] infected_watcher started.")
-    await log_to_bot_channel("[MEMBERJOIN] watcher started.")
-    await log_to_bot_channel("[ACTIVITY] activity_inactive_watcher started.")
-
-    await log_to_bot_channel(f"Bot ready as {bot.user} in {len(bot.guilds)} guild(s).")
-
-    await flush_startup_logs()
-
-    startup_logging_done = True
-    startup_log_buffer = []
-
-    if sticky_storage_message_id is None:
-        print("STORAGE NOT INITIALIZED — Run /sticky_init, /prize_init and /deadchat_init")
-    else:
-        await initialize_dead_chat()
+    # Initialize Dead Chat holders / timestamps based on loaded config
+    await initialize_dead_chat()
 
     for guild in bot.guilds:
         cfg = await ensure_guild_config(guild)
@@ -1628,96 +1651,6 @@ async def deadchat_rescan(ctx):
                 await log_exception("deadchat_rescan_history", e)
         await save_deadchat_storage()
     await ctx.respond(f"Rescan complete — found latest message in {count} dead-chat channels and saved timestamps.", ephemeral=True)
-
-@bot.slash_command(name="memberjoin_init", description="Create member-join storage message")
-async def memberjoin_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("MEMBERJOIN_DATA:[]")
-    global member_join_storage_message_id
-    member_join_storage_message_id = msg.id
-    await ctx.respond(f"Member join storage created: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="activity_init", description="Create last-activity storage message")
-async def activity_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("ACTIVITY_DATA:{}")
-    global last_activity_storage_message_id
-    last_activity_storage_message_id = msg.id
-    await save_last_activity_storage()
-    await ctx.respond(f"Activity storage message created: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="deadchat_state_init", description="Create DEADCHAT_STATE storage message")
-async def deadchat_state_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("DEADCHAT_STATE:{\"current_holders\":{},\"last_win_times\":{},\"notice_msg_ids\":{}}")
-    global deadchat_state_storage_message_id
-    deadchat_state_storage_message_id = msg.id
-    await save_deadchat_state()
-    await ctx.respond(f"Created DEADCHAT_STATE message: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="twitch_state_init", description="Create TWITCH_STATE storage message")
-async def twitch_state_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("TWITCH_STATE:{}")
-    global twitch_state_storage_message_id
-    twitch_state_storage_message_id = msg.id
-    await save_twitch_state()
-    await ctx.respond(f"Created TWITCH_STATE message: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="sticky_init", description="Manually create sticky storage message")
-async def sticky_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Storage channel invalid.", ephemeral=True)
-    msg = await ch.send("STICKY_DATA:{}")
-    global sticky_storage_message_id
-    sticky_storage_message_id = msg.id
-    await save_stickies()
-    await ctx.respond(f"Sticky storage message created: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="deadchat_init", description="Manually create deadchat storage message")
-async def deadchat_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Storage channel invalid.", ephemeral=True)
-    msg = await ch.send("DEADCHAT_DATA:{}")
-    global deadchat_storage_message_id
-    deadchat_storage_message_id = msg.id
-    await save_deadchat_storage()
-    await ctx.respond(f"Deadchat storage message created: {msg.id}", ephemeral=True)
-
-@bot.slash_command(name="config_init", description="Create guild config storage message")
-async def config_init(ctx):
-    if not ctx.author.guild_permissions.administrator:
-        return await ctx.respond("Admin only.", ephemeral=True)
-    ch = bot.get_channel(STORAGE_CHANNEL_ID)
-    if not isinstance(ch, discord.TextChannel):
-        return await ctx.respond("Invalid storage channel", ephemeral=True)
-    msg = await ch.send("CONFIG_DATA:{}")
-    global guild_config_storage_message_id
-    guild_config_storage_message_id = msg.id
-    await save_guild_config_storage()
-    await ctx.respond(f"Guild config storage message created: {msg.id}", ephemeral=True)
 
 @bot.slash_command(name="config_show", description="Show this server's Admin Bot config")
 async def config_show(ctx):
