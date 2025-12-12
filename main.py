@@ -43,7 +43,7 @@ DEFAULT_DEADCHAT_STEAL_MESSAGE = "{mention} has stolen the {role} role after {mi
 DEFAULT_PLAGUE_OUTBREAK_MESSAGE = "**PLAGUE OUTBREAK**\n-# The sickness has chosen its host.\n-# {mention} bears the infection, binding the plague and ending today’s contagion.\n-# Those who claim Dead Chat after this moment will not be touched by the disease.\n-# [Learn More](https://discord.com/channels/1205041211610501120/1447330327923265586)"
 DEFAULT_PRIZE_ANNOUNCE_MESSAGE = "{winner} has won a **{gift}** with {role}!\n-# Drop Rate: {rarity}"
 DEFAULT_PRIZE_CLAIM_MESSAGE = "You claimed a **{gift}**!"
-DEFAULT_AUTO_DELETE_IGNORE_PHRASES = ["happy birthday", "happy bday", "happy b-day", "happy belated bday", "happy belated b-day", "happy belated birthday"]
+DEFAULT_AUTO_DELETE_IGNORE_PHRASES = []
 
 GAME_NOTIF_OPEN_TEXT = "Choose the game notifications you want:"
 GAME_NOTIF_NO_CHANGES = "No changes."
@@ -315,9 +315,13 @@ async def get_guild_config(guild: discord.Guild) -> dict | None:
 async def ensure_guild_config(guild: discord.Guild) -> dict:
     if db_pool is None:
         return {}
-    cfg = await ensure_guild_config(guild)
+
+    # First try to load from DB
+    cfg = await get_guild_config(guild)
     if cfg is not None:
         return cfg
+
+    # If not present, insert a blank row
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
@@ -327,20 +331,10 @@ async def ensure_guild_config(guild: discord.Guild) -> dict:
             """,
             guild.id,
         )
-    cfg = await ensure_guild_config(guild)
-    return cfg or {}
 
-async def get_config_channel(guild: discord.Guild, key: str) -> TextChannel | None:
-    cfg = await ensure_guild_config(guild)
-    if not cfg:
-        return None
-    cid = cfg.get(key)
-    if not cid:
-        return None
-    ch = guild.get_channel(cid)
-    if isinstance(ch, TextChannel):
-        return ch
-    return None
+    # Load again
+    cfg = await get_guild_config(guild)
+    return cfg or {}
 
 async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None:
     cfg = await ensure_guild_config(guild)
@@ -1432,16 +1426,22 @@ async def on_message(message: discord.Message):
     auto_ids = cfg.get("auto_delete_channel_ids", [])
     if message.channel.id in auto_ids:
         content_lower = message.content.lower()
-        ignore_phrases = cfg.get("auto_delete_ignore_phrases", DEFAULT_AUTO_DELETE_IGNORE_PHRASES)
+        # 100% custom, optional ignore list
+        ignore_phrases = cfg.get("auto_delete_ignore_phrases") or []
         if not any(phrase.lower() in content_lower for phrase in ignore_phrases):
             delay = cfg.get("auto_delete_delay_seconds", DELETE_DELAY_SECONDS)
+
             async def delete_later():
                 await asyncio.sleep(delay)
                 try:
                     await message.delete()
-                    await log_to_guild_bot_channel(guild, f"[AUTO-DELETE] Message {message.id} in <#{message.channel.id}> deleted after {delay} seconds.")
+                    await log_to_guild_bot_channel(
+                        guild,
+                        f"[AUTO-DELETE] Message {message.id} in <#{message.channel.id}> deleted after {delay} seconds."
+                    )
                 except Exception as e:
                     await log_exception("auto_delete_delete_later", e)
+
             bot.loop.create_task(delete_later())
 
 @bot.event
@@ -2107,18 +2107,56 @@ async def add_channel_prize_drop(ctx, channel: discord.Option(discord.TextChanne
     if cfg:
         await ctx.respond(f"Set prize drop channel to {channel.mention}", ephemeral=True)
 
-@bot.slash_command(name="add_channel_auto_delete")
-async def add_channel_auto_delete(ctx, channel: discord.Option(discord.TextChannel, required=True)):
-    cfg = await get_guild_config(ctx.guild)
+@bot.slash_command(name="add_channel_auto_delete", description="Add an auto-delete channel and optional filters")
+async def add_channel_auto_delete(
+    ctx,
+    channel: discord.Option(discord.TextChannel, "Channel to auto-delete in", required=True),
+    delete_after_seconds: discord.Option(int, "Delete messages after this many seconds", required=False),
+    ignore_phrases: discord.Option(str, "Comma-separated phrases to ignore", required=False),
+):
+    # _update_guild_config already enforces admin, but this keeps behavior consistent:
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    cfg = await get_guild_config(ctx.guild) or {}
     ids = cfg.get("auto_delete_channel_ids", [])
-    if channel.id in ids:
-        await ctx.respond("Already added.", ephemeral=True)
+    already = channel.id in ids
+
+    if not already:
+        ids.append(channel.id)
+
+    updates: dict = {"auto_delete_channel_ids": ids}
+
+    # Optional: override delay for this guild
+    if delete_after_seconds is not None:
+        updates["auto_delete_delay_seconds"] = delete_after_seconds
+
+    # Optional: add ignore phrases (merged with existing)
+    if ignore_phrases:
+        existing = cfg.get("auto_delete_ignore_phrases") or []
+        new_list = [p.strip() for p in ignore_phrases.split(",") if p.strip()]
+        for phrase in new_list:
+            if phrase not in existing:
+                existing.append(phrase)
+        updates["auto_delete_ignore_phrases"] = existing
+
+    new_cfg = await _update_guild_config(ctx, updates, "auto delete channel/filters")
+    if not new_cfg:
         return
-    ids.append(channel.id)
-    updates = {"auto_delete_channel_ids": ids}
-    new_cfg = await _update_guild_config(ctx, updates, "auto delete channel")
-    if new_cfg:
-        await ctx.respond(f"Added {channel.mention} to auto delete channels.", ephemeral=True)
+
+    parts = []
+    if not already:
+        parts.append(f"Added {channel.mention} to auto delete channels.")
+    else:
+        parts.append(f"Updated auto delete settings for {channel.mention}.")
+
+    if delete_after_seconds is not None:
+        parts.append(f"Delete after **{delete_after_seconds}** seconds.")
+
+    if ignore_phrases:
+        parts.append(f"Ignoring: `{ignore_phrases}`")
+
+    await ctx.respond(" ".join(parts), ephemeral=True)
 
 @bot.slash_command(name="add_role_active")
 async def add_role_active(ctx, role: discord.Option(discord.Role, required=True)):
