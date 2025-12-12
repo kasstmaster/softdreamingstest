@@ -2023,7 +2023,7 @@ class BasePrizeView(discord.ui.View):
         dead_role = guild.get_role(dead_role_id)
         role_mention = dead_role.mention if dead_role else "the Dead Chat role"
         ch = await get_config_channel(guild, "prize_announce_channel_id") or await get_config_channel(guild, "welcome_channel_id")
-        text = cfg.get("prize_announce_text", or DEFAULT_PRIZE_ANNOUNCE_MESSAGE)
+        text = cfg.get("prize_announce_text") or DEFAULT_PRIZE_ANNOUNCE_MESSAGE
         if ch:
             msg = text.format(
                 winner=interaction.user.mention,
