@@ -1169,6 +1169,7 @@ class PrizeView(BasePrizeView):
 class SetupPagerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        self.active_page: str | None = None  # "features", "commands", or None (home)
 
     def make_home_embed(self) -> discord.Embed:
         embed = discord.Embed(
@@ -1325,13 +1326,43 @@ class SetupPagerView(discord.ui.View):
         embed.set_footer(text="Use the buttons below to switch pages.")
         return embed
 
-    @discord.ui.button(label="Features", style=discord.ButtonStyle.primary, custom_id="setup_features")
+    def refresh_button_styles(self):
+        # Both gray on home (active_page is None)
+        for child in self.children:
+            if not isinstance(child, discord.ui.Button):
+                continue
+            if child.custom_id == "setup_features":
+                child.style = (
+                    discord.ButtonStyle.primary
+                    if self.active_page == "features"
+                    else discord.ButtonStyle.secondary
+                )
+            elif child.custom_id == "setup_commands":
+                child.style = (
+                    discord.ButtonStyle.primary
+                    if self.active_page == "commands"
+                    else discord.ButtonStyle.secondary
+                )
+
+    @discord.ui.button(
+        label="Features",
+        style=discord.ButtonStyle.secondary,  # gray by default
+        custom_id="setup_features",
+    )
     async def features_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        self.active_page = "features"
+        self.refresh_button_styles()
         embed = self.make_features_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Commands", style=discord.ButtonStyle.secondary, custom_id="setup_commands")
+    @discord.ui.button(
+        label="Commands",
+        style=discord.ButtonStyle.secondary,  # gray by default
+        custom_id="setup_commands",
+    )
     async def commands_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+        self.active_page = "commands"
+        self.refresh_button_styles()
         embed = self.make_commands_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -1777,9 +1808,10 @@ async def setup(ctx):
         return await ctx.respond("Admin only.", ephemeral=True)
 
     view = SetupPagerView()
+    # active_page is None by default, so both buttons stay gray
+    view.refresh_button_styles()
     embed = view.make_home_embed()
 
-    # ephemeral=True = only the admin sees it.
     await ctx.respond(embed=embed, view=view, ephemeral=True)
 
 
