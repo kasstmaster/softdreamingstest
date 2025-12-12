@@ -438,20 +438,56 @@ async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None
         return None
     return guild.get_role(rid)
 
-async def get_config_channel(guild, config_key):
+async def ensure_guild_config(guild: discord.Guild) -> dict:
+    if db_pool is None or guild is None:
+        return {}
+
+    cfg = await get_guild_config(guild)
+
+    # If config exists (i.e., row exists), return it
+    # We tell existence by checking if the DB row existed!
     async with db_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM guild_configs WHERE guild_id=$1", guild.id
+        exists = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM guild_configs WHERE guild_id=$1)", guild.id
         )
-        if not row:
-            return None
 
-        channel_id = row.get(config_key)
-        if not channel_id:
-            return None
+    if exists:
+        return cfg
 
-        channel = guild.get_channel(channel_id)
+    # If row does NOT exist, insert it
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO guild_configs (guild_id) VALUES ($1) ON CONFLICT DO NOTHING",
+            guild.id
+        )
+
+    # load again after inserting
+    return await get_guild_config(guild)
+
+
+async def get_config_channel(guild: discord.Guild, key: str) -> discord.TextChannel | None:
+    cfg = await ensure_guild_config(guild)
+    if not cfg:
+        return None
+
+    channel_id = cfg.get(key)
+    if not channel_id:
+        return None
+
+    channel = guild.get_channel(channel_id)
+    if isinstance(channel, discord.TextChannel):
         return channel
+    return None
+
+async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None:
+    cfg = await ensure_guild_config(guild)
+    if not cfg:
+        return None
+    rid = cfg.get(key)
+    if not rid:
+        return None
+    return guild.get_role(rid)
+
 
 async def log_to_guild_mod_log(guild: discord.Guild, content: str):
     """Log moderation-related info to Railway logs only."""
