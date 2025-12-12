@@ -438,6 +438,18 @@ async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None
         return None
     return guild.get_role(rid)
 
+async def get_config_channel(guild: discord.Guild, key: str) -> discord.TextChannel | None:
+    cfg = await ensure_guild_config(guild)
+    if not cfg:
+        return None
+    cid = cfg.get(key)
+    if not cid:
+        return None
+    ch = guild.get_channel(cid)
+    if isinstance(ch, discord.TextChannel):
+        return ch
+    return None
+
 async def log_to_guild_mod_log(guild: discord.Guild, content: str):
     """Log moderation-related info to Railway logs only."""
     gid = guild.id if guild else "?"
