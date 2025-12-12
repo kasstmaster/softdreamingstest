@@ -220,6 +220,145 @@ CREATE TABLE IF NOT EXISTS prize_drops (
 );
 """
 
+REQUIRED_TABLES = [
+    "guild_settings",
+    "member_activity",
+    "activity_channels",
+    "deadchat_channels",
+    "deadchat_state",
+    "deadchat_user_cooldowns",
+    "plague_days",
+    "plague_daily_state",
+    "plague_infections",
+    "prize_definitions",
+    "prize_schedules",
+    "prize_drops",
+]
+
+async def table_exists(name: str) -> bool:
+    async with db_pool.acquire() as conn:
+        v = await conn.fetchval(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1;",
+            name,
+        )
+    return bool(v)
+
+async def ensure_can_write_guild_settings(guild_id: int) -> bool:
+    try:
+        await ensure_guild_row(guild_id)
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE guild_settings SET updated_at = NOW() WHERE guild_id = $1;",
+                guild_id,
+            )
+        return True
+    except Exception:
+        return False
+
+def fmt(ok: bool, label: str, detail: str = "") -> str:
+    return f"{'✅' if ok else '❌'} {label}{(' — ' + detail) if detail else ''}"
+
+async def run_test_all(interaction: discord.Interaction) -> tuple[str, list[str]]:
+    if interaction.guild is None:
+        return ("❌ Must be used in a server.", [])
+    guild = interaction.guild
+    channel = interaction.channel
+    guild_id = int(guild.id)
+
+    lines = []
+
+    ok_token = bool(TOKEN)
+    lines.append(fmt(ok_token, "Token present"))
+
+    ok_db = db_pool is not None
+    lines.append(fmt(ok_db, "DB pool initialized"))
+
+    if ok_db:
+        try:
+            async with db_pool.acquire() as conn:
+                v = await conn.fetchval("SELECT 1;")
+            lines.append(fmt(v == 1, "DB query", f"SELECT 1 -> {v}"))
+        except Exception as e:
+            lines.append(fmt(False, "DB query", str(e)))
+
+        table_results = []
+        for t in REQUIRED_TABLES:
+            try:
+                ex = await table_exists(t)
+                table_results.append((t, ex))
+            except Exception:
+                table_results.append((t, False))
+        missing = [t for (t, ex) in table_results if not ex]
+        lines.append(fmt(len(missing) == 0, "Tables present", "" if not missing else f"missing: {', '.join(missing)}"))
+
+        ok_write = await ensure_can_write_guild_settings(guild_id)
+        lines.append(fmt(ok_write, "Guild settings writable"))
+
+        try:
+            s = await get_guild_settings(guild_id)
+            lines.append(fmt(True, "Guild settings readable", f"tz={s['timezone']} active_mode={s['active_mode']}"))
+            active_role_ok = True
+            deadchat_role_ok = True
+            plague_role_ok = True
+
+            if s["active_role_id"]:
+                active_role_ok = guild.get_role(int(s["active_role_id"])) is not None
+            if s["deadchat_role_id"]:
+                deadchat_role_ok = guild.get_role(int(s["deadchat_role_id"])) is not None
+            if s["plague_role_id"]:
+                plague_role_ok = guild.get_role(int(s["plague_role_id"])) is not None
+
+            lines.append(fmt(active_role_ok, "Active role exists" if s["active_role_id"] else "Active role not set"))
+            lines.append(fmt(deadchat_role_ok, "Dead Chat role exists" if s["deadchat_role_id"] else "Dead Chat role not set"))
+            lines.append(fmt(plague_role_ok, "Plague role exists" if s["plague_role_id"] else "Plague role not set"))
+        except Exception as e:
+            lines.append(fmt(False, "Guild settings readable", str(e)))
+
+        try:
+            dc = await list_deadchat_channels(guild_id)
+            lines.append(fmt(True, "Dead Chat channels readable", f"count={len(dc)}"))
+        except Exception as e:
+            lines.append(fmt(False, "Dead Chat channels readable", str(e)))
+
+        try:
+            s = await get_guild_settings(guild_id)
+            local_now = guild_now(s["timezone"])
+            days = await plague_list_days(guild_id)
+            lines.append(fmt(True, "Plague days readable", f"count={len(days)} today={local_now.date().isoformat()}"))
+        except Exception as e:
+            lines.append(fmt(False, "Plague days readable", str(e)))
+
+        try:
+            defs = await prize_list_definitions(guild_id, limit=5)
+            lines.append(fmt(True, "Prize definitions readable", f"sample_count={len(defs)}"))
+        except Exception as e:
+            lines.append(fmt(False, "Prize definitions readable", str(e)))
+
+        try:
+            s = await get_guild_settings(guild_id)
+            local_now = guild_now(s["timezone"])
+            scheds = await prize_schedule_list_upcoming(guild_id, local_now.date(), limit=5)
+            lines.append(fmt(True, "Prize schedules readable", f"sample_count={len(scheds)}"))
+        except Exception as e:
+            lines.append(fmt(False, "Prize schedules readable", str(e)))
+
+    perms = None
+    if isinstance(channel, discord.abc.GuildChannel):
+        perms = channel.permissions_for(guild.me) if guild.me else None
+    if perms:
+        lines.append(fmt(perms.send_messages, "Permission: send_messages"))
+        lines.append(fmt(perms.manage_roles, "Permission: manage_roles"))
+        lines.append(fmt(perms.read_message_history, "Permission: read_message_history"))
+    else:
+        lines.append(fmt(False, "Permission check", "could not evaluate"))
+
+    cmd_count = len(bot.tree.get_commands())
+    lines.append(fmt(cmd_count > 0, "Slash commands registered", f"count={cmd_count}"))
+
+    summary_ok = all(l.startswith("✅") for l in lines if "missing:" in l or l.startswith("✅") or l.startswith("❌"))
+    title = "✅ TEST ALL PASSED" if summary_ok else "⚠️ TEST ALL FOUND ISSUES"
+    return (title, lines)
+
 def require_guild(interaction: discord.Interaction) -> int:
     if interaction.guild is None:
         raise RuntimeError("This command must be used in a server.")
@@ -1287,6 +1426,12 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 ############### COMMAND GROUPS ###############
+@bot.tree.command(name="test_all", description="Run a full system test for this server")
+async def test_all(interaction: discord.Interaction):
+    title, lines = await run_test_all(interaction)
+    embed = discord.Embed(title=title, description="\n".join(lines))
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 @bot.tree.command(name="ping", description="Bot heartbeat")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("pong ✅")
