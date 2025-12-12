@@ -1794,7 +1794,7 @@ async def setup(ctx):
     embed.add_field(
         name="CHANNELS",
         value=(
-            "`/welcome_channel` - Set the default welcome channel for new members.\n"
+            "> `/welcome_channel` - Set the default welcome channel for new members.\n"
             "`/birthday_announce_channel` - Set the channel where birthday messages are posted.\n"
             "`/twitch_stream_channel` - Set the default channel for Twitch live notifications.\n"
             "`/deadchat_trigger_channels` - Add a channel that counts for Dead Chat steals.\n"
