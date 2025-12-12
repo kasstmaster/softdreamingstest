@@ -1296,51 +1296,51 @@ class SetupView(discord.ui.View):
 **Full Setup Checklist**
 
 CHANNELS:
-`/welcome_channel`
-`/birthday_announce_channel`
-`/twitch_stream_channel`
-`/deadchat_trigger_channels`
-`/prize_announce_channel`
-`/prize_channel`
-`/log_channel_members`
-`/log_channel_bots`
-`/auto_delete_channel`
+`/welcome_channel` - Set the default welcome channel for new members.
+`/birthday_announce_channel` - Set the channel where birthday messages are posted.
+`/twitch_stream_channel` - Set the default channel for Twitch live notifications.
+`/deadchat_trigger_channels` - Add a channel that counts for Dead Chat steals.
+`/prize_announce_channel` - Set the channel where prize wins are announced.
+`/prize_channel` - Set the channel where prize drops appear.
+`/log_channel_members` - Set the member join/leave/ban/kick log channel.
+`/log_channel_bots` - Set the bot join/leave/ban log channel.
+`/auto_delete_channel` - Add a channel to the auto-delete system.
 
 ROLES:
-`/active_member_role`
-`/birthday_role`
-`/deadchat_role`
-`/plague_role`
-`/member_join_role`
-`/bot_join_role`
+`/active_member_role` - Set the role used for active members.
+`/birthday_role` - Set the role used to mark birthdays.
+`/deadchat_role` - Set the role given to the current Dead Chat holder.
+`/plague_role` - Set the role used for plague infections.
+`/member_join_role` - Set the role given to members after a short delay.
+`/bot_join_role` - Set the role given automatically to new bots.
 
 TEXT & MESSAGES:
-`/birthday_msg`
-`/twitch_msg`
-`/plague_msg`
-`/sticky_message`
+`/birthday_msg` - Set the birthday announcement template text.
+`twitch_msg` - Set the Twitch "went live" announcement template.
+/`plague_msg` - Set the plague outbreak announcement text.
+`/sticky_message` - Set or clear a sticky message in this channel.
 
 AUTO DELETE:
-`/auto_delete_delay`
-`/auto_delete_filters`
+`/auto_delete_delay` - Set how long messages last in auto-delete channels (seconds).
+`/auto_delete_filters` - Add a phrase that never gets auto-deleted.
 
 TWITCH & ACTIVITY:
-`/twitch_channel`
-`/active_member_role_add`
+`/twitch_channel` - Add a Twitch channel and where its live announcements go.
+`/active_member_role_add` - Mark a member as active right now (gives active role).
 
 PRIZES & DEADCHAT:
-`/prize_add`
-`/prize_day`
-`/prize_announce_send`
-`/prize_list`
-`/prize_delete`
-`/plague_day`
-`/deadchat_scan`
+`/prize_add` - Define a prize title and its drop rarity.
+`/prize_day` - Schedule or instantly drop a Dead Chat prize.
+`/prize_announce_send` - Manually announce a Dead Chat prize winner.
+`/prize_list` - View all scheduled Dead Chat prize drops.
+`/prize_delete` - Delete a scheduled prize drop by ID.
+`/plague_day` - Schedule a plague day; first Dead Chat steal gets infected.
+`/deadchat_scan` - Scan Dead Chat channels and refresh idle timestamps.
 
 UTILITY:
-`/send_msg`
-`/edit_msg`
-`/birthday_announce_send`
+`/send_msg` - Make the bot send a custom message in this channel.
+`/edit_msg` - Edit a bot message in this channel by ID.
+`/birthday_announce_send` - Manually send a birthday message for a member.
         """.strip("\n")
         await interaction.response.send_message(text, ephemeral=True)
 
