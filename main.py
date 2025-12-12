@@ -40,7 +40,8 @@ intents.message_content = True
 intents.voice_states = True
 
 DEBUG_GUILD_ID = int(os.getenv("DEBUG_GUILD_ID", "0"))
-bot = discord.Bot(intents=intents, debug_guilds=[DEBUG_GUILD_ID])
+debug_guilds = [DEBUG_GUILD_ID] if DEBUG_GUILD_ID else None
+bot = discord.Bot(intents=intents, debug_guilds=debug_guilds)
 
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
@@ -159,8 +160,14 @@ async def init_db():
 
     db_pool = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5)
 
+    if db_pool is None:
+    return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
+    if db_pool is None:
+    return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
     async with db_pool.acquire() as conn:
-        await conn.execute("""
+    await conn.execute("""
         CREATE TABLE IF NOT EXISTS guild_configs (
             guild_id BIGINT PRIMARY KEY,
             welcome_channel_id BIGINT DEFAULT 0,
@@ -3122,6 +3129,9 @@ async def qotd_set_channel(
     if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
         return await ctx.respond("Admin only.", ephemeral=True)
 
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
@@ -3140,6 +3150,9 @@ async def qotd_enable(ctx):
     if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
         return await ctx.respond("Admin only.", ephemeral=True)
 
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
+
     async with db_pool.acquire() as conn:
         await conn.execute(
             """
@@ -3157,6 +3170,9 @@ async def qotd_enable(ctx):
 async def qotd_disable(ctx):
     if not (ctx.author.guild_permissions.administrator or ctx.guild.owner_id == ctx.author.id):
         return await ctx.respond("Admin only.", ephemeral=True)
+
+    if db_pool is None:
+        return await ctx.respond("Database is not initialized. Check DATABASE_URL.", ephemeral=True)
 
     async with db_pool.acquire() as conn:
         await conn.execute(
@@ -3715,6 +3731,18 @@ async def add_channel_prize_announce(
     if cfg:
         await ctx.respond(f"Set prize announce channel to {channel.mention}", ephemeral=True)
 
+@bot.slash_command(
+    name="twitch_announce_channel",
+    description="Set the default channel where Twitch live messages are posted."
+)
+async def set_twitch_announce_channel(
+    ctx,
+    channel: discord.Option(discord.TextChannel, required=True),
+):
+    updates = {"twitch_announce_channel_id": channel.id}
+    cfg = await _update_guild_config(ctx, updates, "twitch announce channel")
+    if cfg:
+        await ctx.respond(f"Set Twitch announce channel to {channel.mention}", ephemeral=True)
 
 @bot.slash_command(
     name="log_channel_members",
@@ -4010,7 +4038,7 @@ async def add_twitch_notification(
     if notification_channel is None:
         announce_id = cfg.get("twitch_announce_channel_id", 0)
         if announce_id == 0:
-            await ctx.respond("Set default twitch announce channel first with /twitch_stream_channel.", ephemeral=True)
+            await ctx.respond("Please run `/twitch_channel` again and choose an `announce_channel` (this sets the default Twitch announce channel).", ephemeral=True)
             return
     else:
         announce_id = notification_channel.id
