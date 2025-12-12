@@ -47,3 +47,4 @@ async def db_heartbeat():
 ############### ON_READY & BOT START ###############
 if __name__ == "__main__":
     asyncio.run(db_heartbeat())
+
