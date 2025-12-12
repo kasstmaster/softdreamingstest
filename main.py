@@ -1291,9 +1291,7 @@ async def on_message(message: discord.Message):
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("pong ✅")
 
-config_group = discord.app_commands.Group(name="config", description="Server configuration")
-
-active_group = discord.app_commands.Group(name="active", description="Activity Tracking settings", parent=config_group)
+active_group = discord.app_commands.Group(name="active", description="Activity Tracking settings")
 
 @active_group.command(name="set_role", description="Set the Active Member role")
 async def active_set_role(interaction: discord.Interaction, role: discord.Role):
@@ -1355,7 +1353,7 @@ async def active_show(interaction: discord.Interaction):
         ephemeral=True,
     )
 
-deadchat_group = discord.app_commands.Group(name="deadchat", description="Dead Chat settings", parent=config_group)
+deadchat_group = discord.app_commands.Group(name="deadchat", description="Dead Chat settings")
 
 @deadchat_group.command(name="set_role", description="Set the Dead Chat role")
 async def deadchat_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
@@ -1430,7 +1428,7 @@ async def deadchat_show_cmd(interaction: discord.Interaction):
         ephemeral=True,
     )
 
-plague_group = discord.app_commands.Group(name="plague", description="Plague settings", parent=config_group)
+plague_group = discord.app_commands.Group(name="plague", description="Plague settings")
 
 @plague_group.command(name="set_role", description="Set the Plague role")
 async def plague_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
@@ -1482,7 +1480,7 @@ async def plague_list_days_cmd(interaction: discord.Interaction):
         return
     await interaction.response.send_message("\n".join(d.isoformat() for d in days), ephemeral=True)
 
-prizes_group = discord.app_commands.Group(name="prizes", description="Prize settings", parent=config_group)
+prizes_group = discord.app_commands.Group(name="prizes", description="Prize settings")
 
 @prizes_group.command(name="enable", description="Enable/disable prize system")
 @discord.app_commands.choices(enabled=BOOL_CHOICES)
@@ -1567,7 +1565,7 @@ async def prizes_remove_schedule_cmd(interaction: discord.Interaction, schedule_
     await prize_schedule_remove(guild_id, sid)
     await interaction.response.send_message("✅ Schedule removed.", ephemeral=True)
 
-timezone_group = discord.app_commands.Group(name="timezone", description="Timezone settings", parent=config_group)
+timezone_group = discord.app_commands.Group(name="timezone", description="Timezone settings")
 
 @timezone_group.command(name="set", description="Set this server's timezone")
 @discord.app_commands.autocomplete(tz=timezone_autocomplete)
@@ -1617,7 +1615,11 @@ async def status_activity(interaction: discord.Interaction, user: discord.Member
         )
     await interaction.response.send_message(f"{member.mention} last message at: `{val}`", ephemeral=True)
 
-bot.tree.add_command(config_group)
+bot.tree.add_command(active_group)
+bot.tree.add_command(deadchat_group)
+bot.tree.add_command(plague_group)
+bot.tree.add_command(prizes_group)
+bot.tree.add_command(timezone_group)
 bot.tree.add_command(status_group)
 
 ############### ON_READY & BOT START ###############
