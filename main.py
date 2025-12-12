@@ -1362,73 +1362,6 @@ class SteamPrizeView(BasePrizeView):
     gift_title = "Steam Gift Card"
     rarity = "Rare"
 
-class GameNotificationSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label="General games", value="1352405080703504384"),
-            discord.SelectOption(label="Among Us Vanilla", value="1406868589893652520"),
-            discord.SelectOption(label="Among Us Modded", value="1406868685225725976"),
-            discord.SelectOption(label="Among Us Proximity Chat", value="1342246913663303702"),
-        ]
-        super().__init__(
-            placeholder="Select game notifications…",
-            min_values=0,
-            max_values=len(options),
-            options=options,
-            custom_id="game_notif_select"
-        )
-    async def callback(self, interaction: discord.Interaction):
-        selected = [int(x) for x in self.values]
-        member = interaction.user
-        added = []
-        removed = []
-        for opt in self.options:
-            role_id = int(opt.value)
-            role = interaction.guild.get_role(role_id)
-            if not role:
-                continue
-            if role_id in selected:
-                if role not in member.roles:
-                    await member.add_roles(role, reason="Game notification opt-in")
-                    added.append(role.name)
-            else:
-                if role in member.roles:
-                    await member.remove_roles(role, reason="Game notification opt-out")
-                    removed.append(role.name)
-        text = ""
-        if added:
-            text += GAME_NOTIF_ADDED_PREFIX + ", ".join(added) + "\n"
-        if removed:
-            text += GAME_NOTIF_REMOVED_PREFIX + ", ".join(removed) + "\n"
-        if not text:
-            text = GAME_NOTIF_NO_CHANGES
-        if added or removed:
-            await log_to_bot_channel(
-                f"[GAMES] {member.mention} updated game notif roles. Added: {', '.join(added) or 'none'}; Removed: {', '.join(removed) or 'none'}."
-            )
-        await interaction.response.send_message(text.strip(), ephemeral=True)
-
-class GameNotificationView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Get Notified",
-        style=discord.ButtonStyle.grey,
-        custom_id="game_notif_persistent_button_v9"
-    )
-    async def open_menu(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            GAME_NOTIF_OPEN_TEXT,
-            view=GameNotificationSelectView(),
-            ephemeral=True
-        )
-
-class GameNotificationSelectView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=300)
-        self.add_item(GameNotificationSelect())
-
 
 ############### AUTOCOMPLETE FUNCTIONS ###############
 
@@ -1593,7 +1526,6 @@ async def activity_inactive_watcher():
 async def on_ready():
     print(f"{bot.user} is online!")
     await init_db()
-    bot.add_view(GameNotificationView())
     await run_all_inits_with_logging()
 
     global startup_logging_done, startup_log_buffer
@@ -1654,8 +1586,7 @@ async def on_message(message: discord.Message):
                 pass
             except Exception as e:
                 await log_exception("on_message_sticky_delete", e)
-        view = GameNotificationView()
-        new_msg = await message.channel.send(sticky_texts[message.channel.id], view=view)
+        new_msg = await message.channel.send(sticky_texts[message.channel.id])
         sticky_messages[message.channel.id] = new_msg.id
         await save_stickies()
     cfg = await get_guild_config(message.guild)
@@ -1769,6 +1700,21 @@ async def db_test(ctx):
     except Exception as e:
         return await ctx.respond(f"DB error: {e}", ephemeral=True)
     await ctx.respond(f"DB OK, SELECT 1 returned: {value}", ephemeral=True)
+
+async def _update_guild_config(ctx, updates: dict, summary_label: str):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.respond("Admin only.", ephemeral=True)
+        return None
+    cfg = await ensure_guild_config(ctx.guild)
+    cfg.update(updates)
+    global guild_configs
+    guild_configs[ctx.guild.id] = cfg
+    await save_guild_config_storage()
+    await save_guild_config_db(ctx.guild, cfg)
+    await log_to_bot_channel(
+        f"[CONFIG] {ctx.author.mention} updated {summary_label} for guild {ctx.guild.id}."
+    )
+    return cfg
 
 @bot.slash_command(name="storage_debug", description="Show storage message IDs for all systems")
 async def storage_debug(
@@ -1979,61 +1925,82 @@ async def config_db_show(ctx):
         text = text[:1900] + "\n...[truncated]"
     await ctx.respond(f"```json\n{text}\n```", ephemeral=True)
 
-@bot.slash_command(name="setup", description="Configure Admin Bot for this server")
-async def setup(
-    ctx,
-    welcome_channel: discord.Option(discord.TextChannel, "Where welcome/birthday messages go", required=True),
-    storage_channel: discord.Option(discord.TextChannel, "Storage channel for this guild (or same as global)", required=False),
-    birthday_role: discord.Option(discord.Role, "Birthday role", required=False),
-    member_role: discord.Option(discord.Role, "Member join role", required=False),
-    bot_role: discord.Option(discord.Role, "Role given to bots on join", required=False),
-    deadchat_role: discord.Option(discord.Role, "Dead Chat role", required=False),
-    infected_role: discord.Option(discord.Role, "Plague infected role", required=False),
-    active_role: discord.Option(discord.Role, "Active member role", required=False),
-    deadchat_trigger_channels: discord.Option(str, "Dead Chat channel IDs (comma separated)", required=False),
-    autodelete_channels: discord.Option(str, "Auto-delete channel IDs (comma separated)", required=False),
-    mod_log_channel: discord.Option(discord.TextChannel, "Mod log thread/channel", required=False),
-    bot_log_channel: discord.Option(discord.TextChannel, "Bot log thread/channel", required=False),
-    prize_drop_channel: discord.Option(discord.TextChannel, "Prize drop channel", required=False),
-):
+@bot.slash_command(
+    name="setup",
+    description="Show Admin Bot setup commands for this server"
+)
+async def setup(ctx):
     if not ctx.author.guild_permissions.administrator:
         return await ctx.respond("Admin only.", ephemeral=True)
+
+    text = """
+SETUP COMMANDS:
+/add_channel_welcome
+/add_channel_birthday_announcement
+/add_channel_twitch_announcement
+/add_channel_dead_chat_triggers
+/add_channel_prize_announcement
+/add_channel_member_log
+/add_channel_bot_log
+/add_channel_prize_drop
+/add_channel_auto_delete
+  - What triggers deletion
+  - Ignore words / phrases
+
+/add_role_active
+/add_role_birthday
+/add_role_dead_chat
+/add_role_infected
+/add_role_member_join
+/add_role_bot_join
+
+/add_text_birthday
+/add_text_twitch
+/add_text_plague
+
+/add_twitch_notification
+  - Twitch channel (login)
+  - Notification channel
+
+/add_prize
+  - Create a prize title
+  - Create drop rate text
+
+OPTIONAL FEATURES:
+Welcome messages
+Birthdays
+Twitch features
+Prize features
+Dead Chat / Infected roles
+Join roles
+Auto-delete channels
+""".strip("\n")
+
+    await ctx.respond(f"```txt\n{text}\n```", ephemeral=True)
+
+@bot.slash_command(
+    name="add_channel_auto_delete",
+    description="Mark this channel as an auto-delete channel for this server"
+)
+async def add_channel_auto_delete(ctx):
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.respond("Admin only.", ephemeral=True)
+
     cfg = await ensure_guild_config(ctx.guild)
-    cfg["welcome_channel_id"] = welcome_channel.id
-    if storage_channel:
-        cfg["storage_channel_id"] = storage_channel.id
-    if birthday_role:
-        cfg["birthday_role_id"] = birthday_role.id
-    if member_role:
-        cfg["member_join_role_id"] = member_role.id
-    if bot_role:
-        cfg["bot_join_role_id"] = bot_role.id
-    if deadchat_role:
-        cfg["dead_chat_role_id"] = deadchat_role.id
-    if infected_role:
-        cfg["infected_role_id"] = infected_role.id
-    if active_role:
-        cfg["active_role_id"] = active_role.id
-    if deadchat_trigger_channels:
-        try:
-            cfg["dead_chat_channel_ids"] = [int(x.strip()) for x in deadchat_trigger_channels.split(",") if x.strip().isdigit()]
-        except:
-            pass
-    if autodelete_channels:
-        try:
-            cfg["auto_delete_channel_ids"] = [int(x.strip()) for x in autodelete_channels.split(",") if x.strip().isdigit()]
-        except:
-            pass
-    if mod_log_channel:
-        cfg["mod_log_channel_id"] = mod_log_channel.id
-    if bot_log_channel:
-        cfg["bot_log_channel_id"] = bot_log_channel.id
-    if prize_drop_channel:
-        cfg["prize_drop_channel_id"] = prize_drop_channel.id
-    await save_guild_config_storage()
-    await save_guild_config_db(ctx.guild, cfg)
-    await log_to_bot_channel(f"[CONFIG] Setup updated for guild {ctx.guild.id} by {ctx.author.mention}.")
-    await ctx.respond("Configuration saved for this server.", ephemeral=True)
+    current = cfg.get("auto_delete_channel_ids") or []
+    if ctx.channel.id in current:
+        return await ctx.respond("This channel is already configured for auto-delete.", ephemeral=True)
+
+    new_ids = current + [ctx.channel.id]
+    updated_cfg = await _update_guild_config(
+        ctx,
+        {"auto_delete_channel_ids": new_ids},
+        "auto_delete_channel_ids"
+    )
+    if updated_cfg is None:
+        return
+
+    await ctx.respond(f"{ctx.channel.mention} added to auto-delete channels.", ephemeral=True)
 
 @bot.slash_command(name="say", description="Make the bot say something right here")
 async def say(ctx, message: discord.Option(str, "Message to send", required=True)):
@@ -2082,6 +2049,60 @@ async def editbotmsg(
 
     await msg.edit(content=new_content)
     await ctx.respond("Message updated.", ephemeral=True)
+
+@bot.slash_command(name="editbotmsg", description="Edit a bot message in this channel with up to 4 lines")
+async def editbotmsg(
+    ctx,
+    message_id: discord.Option(str, "Message ID", required=True),
+    line1: discord.Option(str, "Line 1 (optional)", required=False) = None,
+    line2: discord.Option(str, "Line 2 (optional)", required=False) = None,
+    line3: discord.Option(str, "Line 3 (optional)", required=False) = None,
+    line4: discord.Option(str, "Line 4 (optional)", required=False) = None,
+):
+    ...
+    await ctx.respond("Message updated.", ephemeral=True)
+
+@bot.slash_command(
+    name="add_role_birthday",
+    description="Set which role should be used as the birthday role for this server"
+)
+async def add_role_birthday(
+    ctx,
+    role: discord.Option(discord.Role, "Role to mark as the birthday role", required=True),
+):
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.respond("Admin only.", ephemeral=True)
+
+    updated_cfg = await _update_guild_config(
+        ctx,
+        {"birthday_role_id": role.id},
+        "birthday_role_id"
+    )
+    if updated_cfg is None:
+        return
+
+    await ctx.respond(f"{role.mention} set as this server's birthday role.", ephemeral=True)
+
+@bot.slash_command(name="birthday_announce", description="Manually send the birthday message for a member")
+async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member", required=True)):
+    if not ctx.author.guild_permissions.administrator:
+        return await ctx.respond("You need Administrator.", ephemeral=True)
+
+    cfg = await get_guild_config(ctx.guild)
+    if cfg:
+        ch = await get_config_channel(ctx.guild, "welcome_channel_id")
+    else:
+        ch = bot.get_channel(WELCOME_CHANNEL_ID)
+
+    if not ch:
+        return await ctx.respond("Birthday/welcome channel not found. Use /add_channel_welcome or /add_channel_birthday_announcement first.", ephemeral=True)
+
+    msg = BIRTHDAY_TEXT.replace("{mention}", member.mention) if BIRTHDAY_TEXT else f"Happy birthday, {member.mention}!"
+    await ch.send(msg)
+    await log_to_bot_channel(
+        f"[BIRTHDAY] Manual birthday announcement sent for {member.mention} by {ctx.author.mention}."
+    )
+    await ctx.respond(f"Sent birthday message for {member.mention}.", ephemeral=True)
 
 @bot.slash_command(name="birthday_announce", description="Manually send the birthday message for a member")
 async def birthday_announce(ctx, member: discord.Option(discord.Member, "Member", required=True)):
