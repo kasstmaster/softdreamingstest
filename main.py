@@ -63,6 +63,32 @@ async def close_db():
         await db_pool.close()
         db_pool = None
 
+async def upsert_guild_setting_timezone(guild_id: int, timezone: str) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO guild_settings (guild_id, timezone, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (guild_id)
+            DO UPDATE SET timezone = EXCLUDED.timezone, updated_at = NOW();
+            """,
+            guild_id,
+            timezone,
+        )
+
+async def get_guild_timezone(guild_id: int) -> str:
+    async with db_pool.acquire() as conn:
+        value = await conn.fetchval(
+            "SELECT timezone FROM guild_settings WHERE guild_id = $1;",
+            guild_id,
+        )
+    return value or "America/Los_Angeles"
+
+def require_guild(interaction: discord.Interaction) -> int:
+    if interaction.guild is None:
+        raise RuntimeError("This command must be used in a server.")
+    return interaction.guild.id
+
 ############### VIEWS / UI COMPONENTS ###############
 
 ############### AUTOCOMPLETE FUNCTIONS ###############
@@ -80,6 +106,25 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.tree.command(name="ping", description="Bot heartbeat")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("pong ✅")
+
+config_group = discord.app_commands.Group(name="config", description="Server configuration")
+
+timezone_group = discord.app_commands.Group(name="timezone", description="Timezone settings", parent=config_group)
+
+@timezone_group.command(name="set", description="Set this server's timezone")
+@discord.app_commands.describe(tz="Example: America/Los_Angeles")
+async def tz_set(interaction: discord.Interaction, tz: str):
+    guild_id = require_guild(interaction)
+    await upsert_guild_setting_timezone(guild_id, tz)
+    await interaction.response.send_message(f"✅ Timezone set to `{tz}`", ephemeral=True)
+
+@timezone_group.command(name="show", description="Show this server's timezone")
+async def tz_show(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    tz = await get_guild_timezone(guild_id)
+    await interaction.response.send_message(f"⏰ Current timezone: `{tz}`", ephemeral=True)
+
+bot.tree.add_command(config_group)
 
 ############### ON_READY & BOT START ###############
 @bot.event
