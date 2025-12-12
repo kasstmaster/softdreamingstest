@@ -371,6 +371,56 @@ async def ensure_guild_configs_schema():
     async with db_pool.acquire() as conn:
         await conn.execute("""
         ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS welcome_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS birthday_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS member_join_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS bot_join_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS dead_chat_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS infected_role_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS active_role_id BIGINT DEFAULT 0;
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS dead_chat_channel_ids TEXT DEFAULT '[]';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS auto_delete_channel_ids TEXT DEFAULT '[]';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS mod_log_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS bot_log_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT DEFAULT 0;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS birthday_announce_channel_id BIGINT DEFAULT 0;
         """)
         await conn.execute("""
@@ -381,20 +431,61 @@ async def ensure_guild_configs_schema():
         ALTER TABLE guild_configs
         ADD COLUMN IF NOT EXISTS prize_announce_channel_id BIGINT DEFAULT 0;
         """)
+
         await conn.execute("""
         ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT DEFAULT 0;
+        ADD COLUMN IF NOT EXISTS auto_delete_delay_seconds INTEGER DEFAULT 0;
         """)
         await conn.execute("""
         ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS mod_log_channel_id BIGINT DEFAULT 0;
-        """)
-        await conn.execute("""
-        ALTER TABLE guild_configs
-        ADD COLUMN IF NOT EXISTS bot_log_channel_id BIGINT DEFAULT 0;
+        ADD COLUMN IF NOT EXISTS auto_delete_ignore_phrases TEXT DEFAULT '[]';
         """)
 
-        
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS twitch_configs TEXT DEFAULT '[]';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_defs TEXT DEFAULT '{}';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_scheduled TEXT DEFAULT '[]';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS plague_scheduled TEXT DEFAULT '[]';
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS infected_members TEXT DEFAULT '{}';
+        """)
+
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS birthday_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS twitch_live_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS plague_outbreak_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS deadchat_steal_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_announce_text TEXT;
+        """)
+        await conn.execute("""
+        ALTER TABLE guild_configs
+        ADD COLUMN IF NOT EXISTS prize_claim_text TEXT;
+        """)
 
 async def get_theme_settings(guild_id: int) -> dict:
     """
