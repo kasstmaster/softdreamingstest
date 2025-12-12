@@ -120,9 +120,6 @@ infected_members: dict[int, dict[int, str]] = {}
 prize_defs: dict[int, dict[str, str]] = {}
 scheduled_prizes: dict[int, list[dict]] = {}
 
-startup_logging_done: bool = False
-startup_log_buffer: list[str] = []
-
 
 ############### HELPER FUNCTIONS ###############
 async def init_db():
@@ -416,103 +413,25 @@ async def get_config_role(guild: discord.Guild, key: str) -> discord.Role | None
     return guild.get_role(rid)
 
 async def log_to_guild_mod_log(guild: discord.Guild, content: str):
-    ch = await get_config_channel(guild, "mod_log_channel_id")
-    if not ch:
-        return
-    try:
-        await ch.send(content)
-    except Exception:
-        pass
+    """Log moderation-related info to Railway logs only."""
+    gid = guild.id if guild else "?"
+    print(f"[MOD-LOG][GUILD {gid}] {content}")
+
 
 async def log_to_guild_bot_channel(guild: discord.Guild, content: str):
-    ch = await get_config_channel(guild, "bot_log_channel_id")
-    if not ch:
-        return
-    try:
-        await ch.send(content)
-    except Exception:
-        pass
+    """Log bot-related info to Railway logs only."""
+    gid = guild.id if guild else "?"
+    print(f"[BOT-LOG][GUILD {gid}] {content}")
+
 
 async def log_to_bot_channel(content: str):
-    if not startup_logging_done:
-        startup_log_buffer.append(content)
-        return
-    guild = bot.get_guild(DEBUG_GUILD_ID) or bot.guilds[0] if bot.guilds else None
-    if guild:
-        await log_to_guild_bot_channel(guild, content)
-
-async def flush_startup_logs():
-    if not startup_log_buffer:
-        return
-    guild = bot.get_guild(DEBUG_GUILD_ID) or bot.guilds[0] if bot.guilds else None
-    if not guild:
-        return
-    cfg = await ensure_guild_config(guild)
-    channel = guild.get_channel(cfg.get("bot_log_channel_id")) if cfg else None
-    if not channel:
-        return
-    early = []
-    watcher_lines = []
-    startup_summaries = []
-    ready_lines = []
-    activity_loaded_lines = []
-    report_entry = None
-    for entry in startup_log_buffer:
-        if "[STORAGE]" in entry and "[RUNTIME CONFIG]" in entry:
-            report_entry = entry
-        elif entry.startswith("[TWITCH] watcher started") or entry.startswith("[PLAGUE] infected_watcher started") or entry.startswith("[MEMBERJOIN] watcher started") or entry.startswith("[ACTIVITY] activity_inactive_watcher started"):
-            watcher_lines.append(entry)
-        elif entry.startswith("[STARTUP] "):
-            startup_summaries.append(entry)
-        elif entry.startswith("[ACTIVITY] Loaded last activity"):
-            activity_loaded_lines.append(entry)
-        elif entry.startswith("Bot ready as "):
-            ready_lines.append(entry)
-        else:
-            early.append(entry)
-    parts = ["---------------------------- STARTUP LOGS ----------------------------",
-    ""]
-    parts.extend(early)
-    basic_line = None
-    if report_entry:
-        lines = report_entry.split("\n")
-        trimmed = [l.rstrip() for l in lines]
-        idx = len(trimmed) - 1
-        while idx >= 0 and trimmed[idx] == "":
-            idx -= 1
-        if idx >= 0 and trimmed[idx] == "All systems passed basic storage and runtime checks.":
-            basic_line = trimmed[idx]
-            trimmed = trimmed[:idx]
-            while trimmed and trimmed[-1] == "":
-                trimmed.pop()
-        if trimmed:
-            parts.extend(trimmed)
-    if watcher_lines:
-        parts.append("")
-        parts.extend(watcher_lines)
-    tail_present = startup_summaries or activity_loaded_lines or basic_line or ready_lines
-    if tail_present:
-        parts.append("")
-        parts.extend(startup_summaries)
-        parts.extend(activity_loaded_lines)
-        if basic_line or ready_lines:
-            parts.append("")
-        if basic_line:
-            parts.append(basic_line)
-        parts.extend(ready_lines)
-    text = "\n".join(parts)
-    text = "@everyone\n" + text
-    if len(text) > 1900:
-        text = text[:1900]
-    await channel.send(text)
+    """Global logs to Railway only."""
+    print(f"[BOT-LOG][GLOBAL] {content}")
 
 async def log_exception(tag: str, exc: Exception):
+    """Log exceptions to Railway logs only."""
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    text = f"{tag}: {exc}\n{tb}"
-    text = "@everyone " + text
-    if len(text) > 1900:
-        text = text[:1900]
-    await log_to_bot_channel(text)
+    print(f"[EXCEPTION] {tag}: {exc}\n{tb}")
 
 async def check_runtime_systems():
     problems = []
@@ -1786,9 +1705,9 @@ class SetupPagerView(discord.ui.View):
             name="Dead Chat, Plague & Prizes",
             value=(
                 "• Dead Chat idle tracking & role steals\n"
-                "• Monthly plague days with infection role\n"
+                "• Scheduled plague days with infection role\n"
                 "• Scheduled prize drops linked to Dead Chat\n"
-                "• Prize claim buttons with announce + logging flow\n"
+                "• Prize claim buttons with announcements\n"
                 "• Channel rescanning for accurate Dead Chat timestamps"
             ),
             inline=False,
@@ -1868,7 +1787,6 @@ class SetupPagerView(discord.ui.View):
                 "> `/prize_channel` - Set prize drop channel.\n"
                 "> `/prize_announce_channel` - Set prize announcement channel.\n"
                 "> `/log_channel_members` - Set member log channel.\n"
-                "> `/log_channel_bots` - Set bot log channel.\n"
                 "> `/auto_delete_channel` - Add auto-delete channels."
             ),
             inline=False,
@@ -1930,7 +1848,7 @@ class SetupPagerView(discord.ui.View):
 
         embed.add_field(
             name="TWITCH",
-            value="> `/twitch_channel` - Add a Twitch channel and announce target.",
+            value="> `/twitch_channel` - Add a Twitch channel and announcement target.",
             inline=False,
         )
 
@@ -2275,9 +2193,6 @@ async def on_ready():
     print(f"{bot.user} is online!")
     await init_db()
     await run_all_inits_with_logging()
-
-    global startup_logging_done, startup_log_buffer
-
     await initialize_dead_chat()
 
     for guild in bot.guilds:
