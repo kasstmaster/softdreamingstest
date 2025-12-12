@@ -372,6 +372,45 @@ async def init_db():
         ADD COLUMN IF NOT EXISTS auto_delete_ignore_phrases TEXT DEFAULT '[]';
         """)
 
+async def run_migrations(conn):
+    await conn.execute("""
+    DO $$
+    BEGIN
+        -- qotd_settings
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'qotd_settings_pkey'
+        ) THEN
+            ALTER TABLE qotd_settings
+            ADD CONSTRAINT qotd_settings_pkey PRIMARY KEY (guild_id);
+        END IF;
+
+        -- guild_configs
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'guild_configs_pkey'
+        ) THEN
+            ALTER TABLE guild_configs
+            ADD CONSTRAINT guild_configs_pkey PRIMARY KEY (guild_id);
+        END IF;
+
+        -- birthdays
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'birthdays_pkey'
+        ) THEN
+            ALTER TABLE birthdays
+            ADD CONSTRAINT birthdays_pkey PRIMARY KEY (guild_id, user_id);
+        END IF;
+
+        -- vc_role_links
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'vc_role_links_pkey'
+        ) THEN
+            ALTER TABLE vc_role_links
+            ADD CONSTRAINT vc_role_links_pkey PRIMARY KEY (guild_id, channel_id);
+        END IF;
+    END$$;
+    """)
+
+
 async def ensure_guild_configs_schema():
     if db_pool is None:
         return
