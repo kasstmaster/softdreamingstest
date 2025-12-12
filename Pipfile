@@ -1,18 +1,11 @@
 [[source]]
+name = "pypi"
 url = "https://pypi.org/simple"
 verify_ssl = true
-name = "pypi"
 
 [packages]
-py-cord = "==2.6.0"
-aiohttp = "*"
+discord.py = "*"
 asyncpg = "*"
-gspread = "*"
-google-auth = "*"
-google-auth-oauthlib = "*"
-google-auth-httplib2 = "*"
-
-[dev-packages]
 
 [requires]
 python_version = "3.11"
