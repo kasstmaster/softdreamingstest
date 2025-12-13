@@ -2188,40 +2188,58 @@ async def active_show(interaction: discord.Interaction):
 
 deadchat_group = discord.app_commands.Group(name="deadchat", description="Dead Chat settings")
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="set_role", description="Set the Dead Chat role")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 async def deadchat_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
     guild_id = require_guild(interaction)
     await set_deadchat_role(guild_id, int(role.id))
     await interaction.response.send_message(f"✅ Dead Chat role set to {role.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="clear_role", description="Clear the Dead Chat role")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 async def deadchat_clear_role_cmd(interaction: discord.Interaction):
     guild_id = require_guild(interaction)
     await set_deadchat_role(guild_id, None)
     await interaction.response.send_message("✅ Dead Chat role cleared", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="set_idle", description="Set the idle threshold for Dead Chat")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 @discord.app_commands.choices(minutes=DEADCHAT_IDLE_CHOICES)
 async def deadchat_set_idle_cmd(interaction: discord.Interaction, minutes: discord.app_commands.Choice[int]):
     guild_id = require_guild(interaction)
     await set_deadchat_idle(guild_id, minutes.value)
     await interaction.response.send_message(f"✅ Dead Chat idle set to {minutes.value} minute(s)", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="set_cooldown", description="Set cooldown before a user can win again")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 @discord.app_commands.choices(minutes=DEADCHAT_COOLDOWN_CHOICES)
 async def deadchat_set_cooldown_cmd(interaction: discord.Interaction, minutes: discord.app_commands.Choice[int]):
     guild_id = require_guild(interaction)
     await set_deadchat_cooldown(guild_id, minutes.value)
     await interaction.response.send_message(f"✅ Dead Chat cooldown set to {minutes.value} minute(s)", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="require_active", description="Require Active role to win Dead Chat")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 @discord.app_commands.choices(enabled=BOOL_CHOICES)
 async def deadchat_require_active_cmd(interaction: discord.Interaction, enabled: discord.app_commands.Choice[int]):
     guild_id = require_guild(interaction)
     await set_deadchat_requires_active(guild_id, bool(enabled.value))
     await interaction.response.send_message(f"✅ Require Active set to `{bool(enabled.value)}`", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="add_channel", description="Enable Dead Chat in a channel")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 @discord.app_commands.describe(idle_override_minutes="Optional per-channel idle override (minutes)")
 async def deadchat_add_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel, idle_override_minutes: int | None = None):
     guild_id = require_guild(interaction)
@@ -2231,7 +2249,10 @@ async def deadchat_add_channel_cmd(interaction: discord.Interaction, channel: di
     await add_deadchat_channel(guild_id, int(channel.id), idle_override_minutes)
     await interaction.response.send_message(f"✅ Dead Chat enabled in {channel.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="remove_channel", description="Disable Dead Chat in a channel")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 async def deadchat_remove_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
     guild_id = require_guild(interaction)
     await remove_deadchat_channel(guild_id, int(channel.id))
@@ -2773,6 +2794,46 @@ async def on_ready():
     if qotd_task is None:
         qotd_task = asyncio.create_task(qotd_daily_loop(bot))
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
+
+async def _safe_reply(interaction: discord.Interaction, content: str):
+    if interaction.response.is_done():
+        await interaction.followup.send(content, ephemeral=True)
+    else:
+        await interaction.response.send_message(content, ephemeral=True)
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: discord.app_commands.AppCommandError,
+):
+    if isinstance(error, discord.app_commands.errors.CommandOnCooldown):
+        await _safe_reply(
+            interaction,
+            f"⏳ This command is on cooldown. Try again in {error.retry_after:.1f}s.",
+        )
+        return
+
+    if isinstance(error, discord.app_commands.errors.MissingPermissions):
+        await _safe_reply(
+            interaction,
+            "❌ You don’t have permission to use this command.",
+        )
+        return
+
+    if isinstance(error, discord.app_commands.errors.BotMissingPermissions):
+        await _safe_reply(
+            interaction,
+            "⚠️ I’m missing required permissions to do that.",
+        )
+        return
+
+    await _safe_reply(
+        interaction,
+        "⚠️ An unexpected error occurred. The issue has been logged.",
+    )
+
+    import traceback
+    traceback.print_exception(type(error), error, error.__traceback__)
 
 async def runner():
     if not TOKEN:
