@@ -2350,14 +2350,14 @@ async def config_system_cmd(
     timezone_set: str | None = None,
     timezone_show: bool | None = None,
     ping: bool | None = None,
-    test_all: bool | None = None,
+    health_check: bool | None = None,
 ):
     guild_id = require_guild(interaction)
-    used = _count_set(info=info, timezone_set=timezone_set, timezone_show=timezone_show, ping=ping, test_all=test_all)
+    used = _count_set(info=info, timezone_set=timezone_set, timezone_show=timezone_show, ping=ping, health_check=health_check)
     ok = await _require_one_action(
         interaction,
         used,
-        "Examples: `/config system ping:true` • `/config system test_all:true` • `/config system timezone_set:America/Los_Angeles` • `/config system timezone_show:true` • `/config system info:true`",
+        "Examples: `/config system ping:true` • `/config system health_check:true` • `/config system timezone_set:America/Los_Angeles` • `/config system timezone_show:true` • `/config system info:true`",
     )
     if not ok:
         return
@@ -2370,7 +2370,7 @@ async def config_system_cmd(
         await interaction.response.send_message("pong ✅", ephemeral=True)
         return
 
-    if action == "test_all":
+    if action == "health_check":
         if not await require_dev_guild(interaction):
             return
         title, lines = await run_test_all(interaction)
