@@ -3156,9 +3156,604 @@ async def messages_sticky_cmd(
     await sticky_clear(guild_id, int(channel.id))
     await interaction.response.send_message(f"✅ Sticky cleared for {channel.mention}", ephemeral=True)
 
+
+
+############### MOVIE NIGHT (PUBLIC + DEV) ###############
+# NOTE: This section is intentionally additive. It does not modify existing features or templates.
+
+# Separate templates for movie features so we do NOT touch your existing MSG dict.
+MOVIE_MSG = {
+    # Public/manual pool
+    "pool_title": "🎬 Movie Night Pool",
+    "pool_empty": "No picks yet. Use /pick to add one!",
+    "pick_added": "✅ Added to the pool: **{title}**",
+    "pick_removed": "✅ Removed from the pool: **{title}**",
+    "pick_not_found": "❌ I couldn't find that pick in *your* picks.",
+    "pick_duplicate": "❌ That title is already in the pool.",
+    "pick_limit": "❌ You’ve reached the pick limit (**{limit}**). Use /replace_pick or /unpick first.",
+    "winner_announce": "Pool Winner: **{winner_title}**\n{mention}'s pick! {rollover_text}",
+    "rollover_text": "All other picks roll over to the next pool.",
+
+    # Dev/library flow (your server only)
+    "dev_only": "❌ This command is only available in the developer server.",
+    "library_reload_ok": "✅ Library reloaded from Sheets export.",
+    "library_sync_ok": "✅ Library channel synced.",
+    "pool_message_ok": "✅ Pool display message is set.",
+    "library_not_configured": "❌ Movie library is not configured yet.",
+}
+
+async def ensure_movie_tables():
+    """Create movie tables if they don't exist yet. Called lazily from movie commands only."""
+    global db_pool
+    if db_pool is None:
+        await init_db()
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS movie_settings (
+            guild_id BIGINT PRIMARY KEY,
+            mode TEXT NOT NULL DEFAULT 'public_manual',
+            per_user_limit INT NOT NULL DEFAULT 3,
+            pool_display_channel_id BIGINT,
+            pool_display_message_id BIGINT,
+            announce_channel_id_1 BIGINT,
+            announce_channel_id_2 BIGINT,
+            library_channel_id BIGINT,
+            library_source_url TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS movie_pool_picks (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            title TEXT NOT NULL,
+            added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (guild_id, lower(title))
+        );
+        """)
+        await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_movie_pool_picks_guild_user
+        ON movie_pool_picks (guild_id, user_id);
+        """)
+        # Dev/library tables (only used in DEV guild)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS movie_library_items (
+            guild_id BIGINT NOT NULL,
+            sheet_key TEXT NOT NULL,
+            title TEXT NOT NULL,
+            poster_url TEXT,
+            trailer_url TEXT,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (guild_id, sheet_key)
+        );
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS movie_library_messages (
+            guild_id BIGINT NOT NULL,
+            sheet_key TEXT NOT NULL,
+            channel_id BIGINT NOT NULL,
+            message_id BIGINT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (guild_id, sheet_key)
+        );
+        """)
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS movie_night_history (
+            guild_id BIGINT NOT NULL,
+            title TEXT NOT NULL,
+            picked_by BIGINT,
+            picked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """)
+
+async def movie_get_settings(guild_id: int) -> dict:
+    await ensure_movie_tables()
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM movie_settings WHERE guild_id=$1", guild_id)
+        if not row:
+            await conn.execute("INSERT INTO movie_settings (guild_id) VALUES ($1)", guild_id)
+            row = await conn.fetchrow("SELECT * FROM movie_settings WHERE guild_id=$1", guild_id)
+        return dict(row)
+
+async def movie_set_settings(guild_id: int, **kwargs) -> None:
+    await ensure_movie_tables()
+    if not kwargs:
+        return
+    cols = []
+    vals = [guild_id]
+    i = 2
+    for k, v in kwargs.items():
+        cols.append(f"{k}=${i}")
+        vals.append(v)
+        i += 1
+    sql = f"UPDATE movie_settings SET {', '.join(cols)}, updated_at=NOW() WHERE guild_id=$1"
+    async with db_pool.acquire() as conn:
+        await conn.execute(sql, *vals)
+
+def _norm_title(t: str) -> str:
+    return " ".join(t.strip().split())
+
+async def movie_pool_add(guild_id: int, user_id: int, title: str) -> tuple[bool, str]:
+    """Returns (ok, error_code) where error_code is one of: duplicate, limit."""
+    await ensure_movie_tables()
+    title = _norm_title(title)
+    settings = await movie_get_settings(guild_id)
+    limit = int(settings.get("per_user_limit") or 3)
+    async with db_pool.acquire() as conn:
+        # duplicate check (pool-wide)
+        existing = await conn.fetchrow(
+            "SELECT 1 FROM movie_pool_picks WHERE guild_id=$1 AND lower(title)=lower($2)",
+            guild_id, title
+        )
+        if existing:
+            return False, "duplicate"
+        # per-user limit
+        cnt = await conn.fetchval(
+            "SELECT COUNT(*) FROM movie_pool_picks WHERE guild_id=$1 AND user_id=$2",
+            guild_id, user_id
+        )
+        if cnt is not None and int(cnt) >= limit:
+            return False, "limit"
+        await conn.execute(
+            "INSERT INTO movie_pool_picks (guild_id, user_id, title) VALUES ($1, $2, $3)",
+            guild_id, user_id, title
+        )
+    return True, ""
+
+async def movie_pool_remove(guild_id: int, user_id: int, title: str) -> bool:
+    await ensure_movie_tables()
+    title = _norm_title(title)
+    async with db_pool.acquire() as conn:
+        res = await conn.execute(
+            "DELETE FROM movie_pool_picks WHERE guild_id=$1 AND user_id=$2 AND lower(title)=lower($3)",
+            guild_id, user_id, title
+        )
+    # asyncpg returns "DELETE X"
+    try:
+        n = int(res.split()[-1])
+    except Exception:
+        n = 0
+    return n > 0
+
+async def movie_pool_list(guild_id: int) -> list[dict]:
+    await ensure_movie_tables()
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT guild_id, user_id, title, added_at FROM movie_pool_picks WHERE guild_id=$1",
+            guild_id
+        )
+    return [dict(r) for r in rows]
+
+async def movie_pool_render_embed(guild: discord.Guild) -> discord.Embed:
+    settings = await movie_get_settings(int(guild.id))
+    picks = await movie_pool_list(int(guild.id))
+    embed = discord.Embed(title=MOVIE_MSG["pool_title"])
+    if not picks:
+        embed.description = MOVIE_MSG["pool_empty"]
+        return embed
+
+    # Group by user_id
+    by_user: dict[int, list[str]] = {}
+    for r in picks:
+        by_user.setdefault(int(r["user_id"]), []).append(r["title"])
+
+    # Resolve names + sort by name
+    groups = []
+    for uid, titles in by_user.items():
+        member = guild.get_member(uid)
+        name = member.display_name if member else str(uid)
+        groups.append((name.lower(), name, uid, titles))
+    groups.sort(key=lambda x: x[0])
+
+    lines = []
+    for _, name, uid, titles in groups:
+        member = guild.get_member(uid)
+        header = member.mention if member else name
+        lines.append(f"**{header}**")
+        for t in titles:
+            lines.append(f"• {t}")
+        lines.append("")  # spacing
+    embed.description = "\n".join(lines).strip()
+    embed.set_footer(text=f"Total picks: {len(picks)} • Limit per user: {int(settings.get('per_user_limit') or 3)}")
+    return embed
+
+async def movie_pool_update_display(guild: discord.Guild) -> None:
+    """If a persistent pool display message is configured, update it."""
+    settings = await movie_get_settings(int(guild.id))
+    ch_id = settings.get("pool_display_channel_id")
+    msg_id = settings.get("pool_display_message_id")
+    if not ch_id or not msg_id:
+        return
+    channel = guild.get_channel(int(ch_id))
+    if channel is None:
+        return
+    try:
+        msg = await channel.fetch_message(int(msg_id))
+    except Exception:
+        return
+    embed = await movie_pool_render_embed(guild)
+    try:
+        await msg.edit(embed=embed)
+    except Exception:
+        pass
+
+async def movie_pick_random(guild: discord.Guild) -> tuple[str | None, int | None]:
+    """Returns (title, user_id) or (None, None) if empty."""
+    import random
+    picks = await movie_pool_list(int(guild.id))
+    if not picks:
+        return None, None
+    choice = random.choice(picks)
+    title = choice["title"]
+    user_id = int(choice["user_id"])
+    # Remove winner (rollover for the rest)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM movie_pool_picks WHERE guild_id=$1 AND lower(title)=lower($2)",
+            int(guild.id), title
+        )
+        await conn.execute(
+            "INSERT INTO movie_night_history (guild_id, title, picked_by) VALUES ($1, $2, $3)",
+            int(guild.id), title, user_id
+        )
+    await movie_pool_update_display(guild)
+    return title, user_id
+
+# -------- Public commands (manual pool) --------
+
+@bot.tree.command(name="pick", description="Add a movie title to the Movie Night pool")
+@discord.app_commands.describe(title="Movie title to add to the pool")
+async def pick_cmd(interaction: discord.Interaction, title: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    guild_id = int(interaction.guild.id)
+    user_id = int(interaction.user.id)
+    title = _norm_title(title)
+
+    ok, err = await movie_pool_add(guild_id, user_id, title)
+    if not ok:
+        settings = await movie_get_settings(guild_id)
+        if err == "duplicate":
+            await interaction.response.send_message(MOVIE_MSG["pick_duplicate"], ephemeral=True)
+            return
+        if err == "limit":
+            limit = int(settings.get("per_user_limit") or 3)
+            await interaction.response.send_message(
+                MOVIE_MSG["pick_limit"].replace("{limit}", str(limit)),
+                ephemeral=True
+            )
+            return
+        await interaction.response.send_message("❌ Could not add that pick.", ephemeral=True)
+        return
+
+    await movie_pool_update_display(interaction.guild)
+    await interaction.response.send_message(
+        MOVIE_MSG["pick_added"].replace("{title}", title),
+        ephemeral=True
+    )
+
+@bot.tree.command(name="unpick", description="Remove one of your picks from the Movie Night pool")
+@discord.app_commands.describe(title="Movie title to remove")
+async def unpick_cmd(interaction: discord.Interaction, title: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    guild_id = int(interaction.guild.id)
+    user_id = int(interaction.user.id)
+    title = _norm_title(title)
+
+    removed = await movie_pool_remove(guild_id, user_id, title)
+    if not removed:
+        await interaction.response.send_message(MOVIE_MSG["pick_not_found"], ephemeral=True)
+        return
+
+    await movie_pool_update_display(interaction.guild)
+    await interaction.response.send_message(
+        MOVIE_MSG["pick_removed"].replace("{title}", title),
+        ephemeral=True
+    )
+
+@bot.tree.command(name="replace_pick", description="Replace one of your picks with a new title")
+@discord.app_commands.describe(old_title="Your existing pick to replace", new_title="The new title to add")
+async def replace_pick_cmd(interaction: discord.Interaction, old_title: str, new_title: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    guild_id = int(interaction.guild.id)
+    user_id = int(interaction.user.id)
+    old_title = _norm_title(old_title)
+    new_title = _norm_title(new_title)
+
+    removed = await movie_pool_remove(guild_id, user_id, old_title)
+    if not removed:
+        await interaction.response.send_message(MOVIE_MSG["pick_not_found"], ephemeral=True)
+        return
+
+    ok, err = await movie_pool_add(guild_id, user_id, new_title)
+    if not ok:
+        # put old back if new fails
+        await movie_pool_add(guild_id, user_id, old_title)
+        if err == "duplicate":
+            await interaction.response.send_message(MOVIE_MSG["pick_duplicate"], ephemeral=True)
+            return
+        settings = await movie_get_settings(guild_id)
+        if err == "limit":
+            limit = int(settings.get("per_user_limit") or 3)
+            await interaction.response.send_message(
+                MOVIE_MSG["pick_limit"].replace("{limit}", str(limit)),
+                ephemeral=True
+            )
+            return
+        await interaction.response.send_message("❌ Could not replace that pick.", ephemeral=True)
+        return
+
+    await movie_pool_update_display(interaction.guild)
+    await interaction.response.send_message(
+        f"✅ Replaced **{old_title}** → **{new_title}**",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="pool", description="Show the current Movie Night pool")
+async def pool_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    embed = await movie_pool_render_embed(interaction.guild)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="random", description="Pick a random winner from the Movie Night pool")
+async def random_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    title, picked_by = await movie_pick_random(interaction.guild)
+    if not title:
+        await interaction.response.send_message(MOVIE_MSG["pool_empty"], ephemeral=True)
+        return
+    member = interaction.guild.get_member(int(picked_by)) if picked_by else None
+    mention = member.mention if member else "Someone"
+    msg = MOVIE_MSG["winner_announce"] \
+        .replace("{winner_title}", title) \
+        .replace("{mention}", mention) \
+        .replace("{rollover_text}", MOVIE_MSG["rollover_text"])
+    await interaction.response.send_message(msg)
+
+# -------- Dev-only library features (your server only) --------
+
+movies_group = discord.app_commands.Group(name="movies", description="Movie library tools (dev server only)")
+
+def _is_dev_guild(interaction: discord.Interaction) -> bool:
+    return interaction.guild is not None and int(interaction.guild.id) in DEV_GUILD_IDS
+
+async def _require_dev_guild(interaction: discord.Interaction) -> bool:
+    if not _is_dev_guild(interaction):
+        await interaction.response.send_message(MOVIE_MSG["dev_only"], ephemeral=True)
+        return False
+    return True
+
+async def _fetch_csv_rows(url: str) -> list[dict]:
+    # Expected headers: title, poster_url, trailer_url (extra columns ignored)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            resp.raise_for_status()
+            text = await resp.text()
+    import csv, io
+    buf = io.StringIO(text)
+    reader = csv.DictReader(buf)
+    rows = []
+    for i, row in enumerate(reader, start=1):
+        title = _norm_title(row.get("title", "") or "")
+        if not title:
+            continue
+        rows.append({
+            "sheet_key": str(i),
+            "title": title,
+            "poster_url": (row.get("poster_url") or row.get("poster") or "").strip() or None,
+            "trailer_url": (row.get("trailer_url") or row.get("trailer") or "").strip() or None,
+        })
+    return rows
+
+class MovieAddToPoolView(discord.ui.View):
+    def __init__(self, guild_id: int, title: str):
+        super().__init__(timeout=None)
+        self.guild_id = int(guild_id)
+        self.title = title
+
+    @discord.ui.button(label="Add to Pool", style=discord.ButtonStyle.success)
+    async def add_to_pool(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        if int(interaction.guild.id) != self.guild_id:
+            await interaction.response.send_message("❌ Wrong server.", ephemeral=True)
+            return
+
+        ok, err = await movie_pool_add(int(interaction.guild.id), int(interaction.user.id), self.title)
+        if not ok:
+            settings = await movie_get_settings(int(interaction.guild.id))
+            if err == "duplicate":
+                await interaction.response.send_message(MOVIE_MSG["pick_duplicate"], ephemeral=True)
+                return
+            if err == "limit":
+                limit = int(settings.get("per_user_limit") or 3)
+                await interaction.response.send_message(
+                    MOVIE_MSG["pick_limit"].replace("{limit}", str(limit)),
+                    ephemeral=True
+                )
+                return
+            await interaction.response.send_message("❌ Could not add that pick.", ephemeral=True)
+            return
+
+        await movie_pool_update_display(interaction.guild)
+        await interaction.response.send_message(
+            MOVIE_MSG["pick_added"].replace("{title}", self.title),
+            ephemeral=True
+        )
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@movies_group.command(name="set_mode", description="Set movies mode for this server (public_manual or dev_library)")
+@discord.app_commands.describe(mode="public_manual or dev_library", per_user_limit="Max picks per user")
+async def movies_set_mode_cmd(interaction: discord.Interaction, mode: str, per_user_limit: int | None = None):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    if mode not in ("public_manual", "dev_library"):
+        await interaction.response.send_message("❌ Mode must be public_manual or dev_library.", ephemeral=True)
+        return
+    await movie_set_settings(int(interaction.guild.id), mode=mode, per_user_limit=int(per_user_limit) if per_user_limit else None)
+    await interaction.response.send_message("✅ Updated movie settings.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@movies_group.command(name="set_pool_display", description="Set/update the persistent pool display message in this channel")
+async def movies_set_pool_display_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    embed = await movie_pool_render_embed(interaction.guild)
+    try:
+        msg = await interaction.channel.send(embed=embed)
+    except Exception:
+        await interaction.response.send_message("❌ Could not post pool message here.", ephemeral=True)
+        return
+    await movie_set_settings(
+        int(interaction.guild.id),
+        pool_display_channel_id=int(interaction.channel.id),
+        pool_display_message_id=int(msg.id),
+    )
+    await interaction.response.send_message(MOVIE_MSG["pool_message_ok"], ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@movies_group.command(name="set_library_source", description="Set the library source URL (CSV export) for the dev library")
+@discord.app_commands.describe(url="A CSV URL with headers: title,poster_url,trailer_url")
+async def movies_set_library_source_cmd(interaction: discord.Interaction, url: str):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    if not await _require_dev_guild(interaction):
+        return
+    await movie_set_settings(int(interaction.guild.id), library_source_url=url)
+    await interaction.response.send_message("✅ Library source URL saved.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@movies_group.command(name="library_reload", description="Reload the dev movie library from the configured CSV source")
+async def movies_library_reload_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    if not await _require_dev_guild(interaction):
+        return
+    settings = await movie_get_settings(int(interaction.guild.id))
+    src = settings.get("library_source_url")
+    if not src:
+        await interaction.response.send_message(MOVIE_MSG["library_not_configured"], ephemeral=True)
+        return
+    rows = await _fetch_csv_rows(src)
+    async with db_pool.acquire() as conn:
+        # mark all inactive, then upsert actives
+        await conn.execute("UPDATE movie_library_items SET active=FALSE WHERE guild_id=$1", int(interaction.guild.id))
+        for r in rows:
+            await conn.execute("""
+                INSERT INTO movie_library_items (guild_id, sheet_key, title, poster_url, trailer_url, active)
+                VALUES ($1, $2, $3, $4, $5, TRUE)
+                ON CONFLICT (guild_id, sheet_key)
+                DO UPDATE SET title=EXCLUDED.title, poster_url=EXCLUDED.poster_url, trailer_url=EXCLUDED.trailer_url,
+                              active=TRUE, updated_at=NOW()
+            """, int(interaction.guild.id), r["sheet_key"], r["title"], r["poster_url"], r["trailer_url"])
+    await interaction.response.send_message(MOVIE_MSG["library_reload_ok"], ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@movies_group.command(name="set_library_channel", description="Set the library channel for dev library sync")
+async def movies_set_library_channel_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    if not await _require_dev_guild(interaction):
+        return
+    await movie_set_settings(int(interaction.guild.id), library_channel_id=int(interaction.channel.id))
+    await interaction.response.send_message("✅ Library channel set to this channel.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@movies_group.command(name="library_sync", description="Sync one message per movie into the configured library channel (dev only)")
+async def movies_library_sync_cmd(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    if not await _require_dev_guild(interaction):
+        return
+    settings = await movie_get_settings(int(interaction.guild.id))
+    ch_id = settings.get("library_channel_id")
+    if not ch_id:
+        await interaction.response.send_message("❌ Set a library channel first (use /movies set_library_channel in that channel).", ephemeral=True)
+        return
+    channel = interaction.guild.get_channel(int(ch_id))
+    if channel is None:
+        await interaction.response.send_message("❌ Library channel not found.", ephemeral=True)
+        return
+
+    async with db_pool.acquire() as conn:
+        items = await conn.fetch("""
+            SELECT sheet_key, title, poster_url, trailer_url
+            FROM movie_library_items
+            WHERE guild_id=$1 AND active=TRUE
+            ORDER BY title ASC
+        """, int(interaction.guild.id))
+        msg_map = {r["sheet_key"]: r for r in await conn.fetch("""
+            SELECT sheet_key, channel_id, message_id FROM movie_library_messages WHERE guild_id=$1
+        """, int(interaction.guild.id))}
+
+    for item in items:
+        sheet_key = item["sheet_key"]
+        title = item["title"]
+        poster_url = item["poster_url"]
+        trailer_url = item["trailer_url"]
+
+        embed = discord.Embed(title=title)
+        if trailer_url:
+            embed.description = f"[Trailer]({trailer_url})"
+        if poster_url:
+            try:
+                embed.set_image(url=poster_url)
+            except Exception:
+                pass
+        view = MovieAddToPoolView(guild_id=int(interaction.guild.id), title=title)
+
+        if sheet_key in msg_map:
+            try:
+                old_msg = await channel.fetch_message(int(msg_map[sheet_key]["message_id"]))
+                await old_msg.edit(embed=embed, view=view)
+            except Exception:
+                # If edit fails, post a new one and update mapping
+                try:
+                    new_msg = await channel.send(embed=embed, view=view)
+                except Exception:
+                    continue
+                async with db_pool.acquire() as conn:
+                    await conn.execute("""
+                        INSERT INTO movie_library_messages (guild_id, sheet_key, channel_id, message_id)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (guild_id, sheet_key)
+                        DO UPDATE SET channel_id=EXCLUDED.channel_id, message_id=EXCLUDED.message_id, updated_at=NOW()
+                    """, int(interaction.guild.id), sheet_key, int(channel.id), int(new_msg.id))
+        else:
+            try:
+                new_msg = await channel.send(embed=embed, view=view)
+            except Exception:
+                continue
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO movie_library_messages (guild_id, sheet_key, channel_id, message_id)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (guild_id, sheet_key)
+                    DO UPDATE SET channel_id=EXCLUDED.channel_id, message_id=EXCLUDED.message_id, updated_at=NOW()
+                """, int(interaction.guild.id), sheet_key, int(channel.id), int(new_msg.id))
+
+    await interaction.response.send_message(MOVIE_MSG["library_sync_ok"], ephemeral=True)
 bot.tree.add_command(config_group)
 bot.tree.add_command(messages_group)
 bot.tree.add_command(schedule_group)
+bot.tree.add_command(movies_group)
 
 ############### ON_READY & BOT START ###############
 @bot.event
