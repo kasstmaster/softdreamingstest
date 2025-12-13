@@ -12,6 +12,14 @@ from discord.ext import commands
 DATABASE_URL = os.getenv("DATABASE_URL")
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 
+# Only allow certain actions in these guild(s)
+# Set DEV_GUILD_ID in your environment (recommended), or hardcode IDs into the set.
+DEV_GUILD_IDS = {
+    int(os.getenv("DEV_GUILD_ID", "0")),
+    # 123456789012345678,
+}
+DEV_GUILD_IDS.discard(0)
+
 ACTIVE_MODE_CHOICES = [
     discord.app_commands.Choice(name="Any message anywhere in the server", value="all"),
     discord.app_commands.Choice(name="Messages only in configured channels", value="channels"),
@@ -469,6 +477,37 @@ def require_guild(interaction: discord.Interaction) -> int:
     if interaction.guild is None:
         raise RuntimeError("This command must be used in a server.")
     return interaction.guild.id
+
+async def require_dev_guild(interaction: discord.Interaction) -> bool:
+    """Return True only if the interaction happened in an allowed developer guild."""
+    if interaction.guild is None:
+        # Best-effort reply (works even if already responded)
+        try:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        except Exception:
+            try:
+                await interaction.followup.send("❌ Must be used in a server.", ephemeral=True)
+            except Exception:
+                pass
+        return False
+
+    if int(interaction.guild.id) not in DEV_GUILD_IDS:
+        try:
+            await interaction.response.send_message(
+                "❌ This option is only available in the developer server.",
+                ephemeral=True,
+            )
+        except Exception:
+            try:
+                await interaction.followup.send(
+                    "❌ This option is only available in the developer server.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+        return False
+
+    return True
 
 def parse_date_yyyy_mm_dd(s: str) -> date:
     parts = (s or "").strip().split("-")
@@ -2323,12 +2362,15 @@ async def config_system_cmd(
         return
 
     action = used[0]
-
-    if action == "ping":
-        await interaction.response.send_message("pong ✅", ephemeral=True)
+if action == "ping":
+    if not await require_dev_guild(interaction):
         return
+    await interaction.response.send_message("pong ✅", ephemeral=True)
+    return
 
     if action == "test_all":
+        if not await require_dev_guild(interaction):
+            return
         title, lines = await run_test_all(interaction)
         embed = discord.Embed(title=title, description="\n".join(lines))
         await interaction.response.send_message(embed=embed, ephemeral=True)
