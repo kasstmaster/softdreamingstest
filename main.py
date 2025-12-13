@@ -3504,6 +3504,7 @@ async def pool_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="random", description="Pick a random winner from the Movie Night pool")
+@discord.app_commands.default_permissions(manage_guild=True)
 async def random_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
