@@ -1657,9 +1657,9 @@ async def birthday_daily_loop(bot: commands.Bot):
                 if guild is None:
                     continue
 
-                if not r.get("birthday_enabled"):
+                if not bool(r["birthday_enabled"]):
                     continue
-                if not r.get("birthday_role_id") or not r.get("birthday_channel_id"):
+                if not r["birthday_role_id"] or not r["birthday_channel_id"]:
                     continue
 
                 # remove birthday role from anyone who has it but isn't birthday today
@@ -1756,7 +1756,7 @@ async def qotd_daily_loop(bot: commands.Bot):
                     continue
                 if last_seen.get(guild_id) == today:
                     continue
-                if not r.get("qotd_enabled"):
+                if not bool(r["qotd_enabled"]):
                     continue
                 if not r["qotd_channel_id"] or not r["qotd_source_url"]:
                     continue
@@ -2788,9 +2788,9 @@ async def birthday_config_cmd(
                     int(guild_id),
                 )
             missing = []
-            if not row or not row.get("birthday_role_id"):
+            if (not row) or (not row["birthday_role_id"]):
                 missing.append("birthday role (`/birthday config set_role:`)")
-            if not row or not row.get("birthday_channel_id"):
+            if (not row) or (not row["birthday_channel_id"]):
                 missing.append("birthday channel (`/birthday config set_channel:`)")
             if missing:
                 await interaction.response.send_message(
