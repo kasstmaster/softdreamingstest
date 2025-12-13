@@ -20,6 +20,7 @@ DEV_GUILD_IDS = {
 }
 DEV_GUILD_IDS.discard(0)
 
+
 ACTIVE_MODE_CHOICES = [
     discord.app_commands.Choice(name="Any message anywhere in the server", value="all"),
     discord.app_commands.Choice(name="Messages only in configured channels", value="channels"),
@@ -478,10 +479,10 @@ def require_guild(interaction: discord.Interaction) -> int:
         raise RuntimeError("This command must be used in a server.")
     return interaction.guild.id
 
+
 async def require_dev_guild(interaction: discord.Interaction) -> bool:
     """Return True only if the interaction happened in an allowed developer guild."""
     if interaction.guild is None:
-        # Best-effort reply (works even if already responded)
         try:
             await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
         except Exception:
@@ -2362,11 +2363,12 @@ async def config_system_cmd(
         return
 
     action = used[0]
-if action == "ping":
-    if not await require_dev_guild(interaction):
+
+    if action == "ping":
+        if not await require_dev_guild(interaction):
+            return
+        await interaction.response.send_message("pong ✅", ephemeral=True)
         return
-    await interaction.response.send_message("pong ✅", ephemeral=True)
-    return
 
     if action == "test_all":
         if not await require_dev_guild(interaction):
