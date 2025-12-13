@@ -44,6 +44,9 @@ DEV_GUILD_IDS = {
 
 DEV_GUILD_IDS.discard(0)
 
+# Legacy storage channel for one-time import/preview
+LEGACY_STORAGE_CHANNEL_ID = int(os.getenv("LEGACY_STORAGE_CHANNEL_ID", "1440912334813134868"))
+
 
 ACTIVE_MODE_CHOICES = [
     discord.app_commands.Choice(name="Any message anywhere in the server", value="all"),
@@ -530,6 +533,78 @@ async def require_dev_guild(interaction: discord.Interaction) -> bool:
         return False
 
     return True
+
+
+async def legacy_preview(interaction: discord.Interaction) -> dict:
+    """Read legacy *_DATA messages from the legacy storage channel and return parsed objects."""
+    result: dict = {"raw": {}, "errors": []}
+
+    ch = bot.get_channel(LEGACY_STORAGE_CHANNEL_ID)
+    if ch is None:
+        try:
+            ch = await bot.fetch_channel(LEGACY_STORAGE_CHANNEL_ID)
+        except Exception as e:
+            result["errors"].append(f"Could not fetch storage channel: {e!r}")
+            return result
+
+    try:
+        history = [m async for m in ch.history(limit=200, oldest_first=False)]
+    except Exception as e:
+        result["errors"].append(f"Could not read channel history: {e!r}")
+        return result
+
+    prefixes = [
+        "POOL_DATA",
+        "STICKY_DATA",
+        "MEMBERJOIN_DATA",
+        "PLAGUE_DATA",
+        "DEADCHAT_DATA",
+        "DEADCHAT_STATE",
+        "PRIZE_MOVIE_DATA",
+        "PRIZE_NITRO_DATA",
+        "PRIZE_STEAM_DATA",
+        "TWITCH_STATE",
+        "ACTIVITY_DATA",
+        "CONFIG_DATA",
+    ]
+
+    import json as _json
+
+    def _try_parse_json(blob: str):
+        try:
+            return _json.loads(blob)
+        except Exception as e:
+            return ("__error__", str(e))
+
+    for m in history:
+        content = (m.content or "").strip()
+        if not content:
+            continue
+
+        if content.startswith("{") and content.endswith("}"):
+            obj = _try_parse_json(content)
+            if not (isinstance(obj, tuple) and obj and obj[0] == "__error__"):
+                try:
+                    if isinstance(obj, dict) and any(isinstance(v, dict) and "birthdays" in v for v in obj.values()):
+                        result["raw"]["BIRTHDAYS_JSON"] = obj
+                        continue
+                except Exception:
+                    pass
+
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            for pfx in prefixes:
+                if line.startswith(pfx + ":"):
+                    blob = line.split(":", 1)[1].strip()
+                    obj = _try_parse_json(blob)
+                    if isinstance(obj, tuple) and obj and obj[0] == "__error__":
+                        result["errors"].append(f"{pfx}: JSON parse error: {obj[1]}")
+                    else:
+                        result["raw"][pfx] = obj
+
+    return result
 
 def parse_date_yyyy_mm_dd(s: str) -> date:
     parts = (s or "").strip().split("-")
@@ -2338,13 +2413,14 @@ async def config_system_cmd(
     timezone_show: bool | None = None,
     ping: bool | None = None,
     health_check: bool | None = None,
+    legacy_preview: bool | None = None,
 ):
     guild_id = require_guild(interaction)
-    used = _count_set(info=info, timezone_set=timezone_set, timezone_show=timezone_show, ping=ping, health_check=health_check)
+    used = _count_set(info=info, timezone_set=timezone_set, timezone_show=timezone_show, ping=ping, health_check=health_check, legacy_preview=legacy_preview)
     ok = await _require_one_action(
         interaction,
         used,
-        "Examples: `/config system ping:true` • `/config system health_check:true` • `/config system timezone_set:America/Los_Angeles` • `/config system timezone_show:true` • `/config system info:true`",
+        "Examples: `/config system ping:true` • `/config system health_check:true` • `/config system legacy_preview:true` • `/config system timezone_set:America/Los_Angeles` • `/config system timezone_show:true` • `/config system info:true`",
     )
     if not ok:
         return
@@ -2363,7 +2439,89 @@ async def config_system_cmd(
         title, lines = await run_test_all(interaction)
         embed = discord.Embed(title=title, description="\n".join(lines))
         await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    if action == "legacy_preview":
+        if not await require_dev_guild(interaction):
+            return
+        data = await legacy_preview(interaction)
+
+        lines = []
+        raw = data.get("raw", {})
+        errs = data.get("errors", [])
+
+        b = raw.get("BIRTHDAYS_JSON")
+        if isinstance(b, dict):
+            total_bd = 0
+            for _g, payload in b.items():
+                try:
+                    bd = payload.get("birthdays", {})
+                    total_bd += len(bd) if isinstance(bd, dict) else 0
+                except Exception:
+                    pass
+            lines.append(f"• birthdays: {total_bd}")
+            try:
+                any_payload = next(iter(b.values()))
+                pm = any_payload.get("public_message") if isinstance(any_payload, dict) else None
+                if isinstance(pm, dict) and pm.get("channel_id") and pm.get("message_id"):
+                    lines.append("• birthday public message: present")
+            except Exception:
+                pass
+        else:
+            lines.append("• birthdays: not found")
+
+        pool = raw.get("POOL_DATA")
+        if isinstance(pool, dict):
+            total_entries = 0
+            try:
+                for _g, payload in pool.items():
+                    entries = payload.get("entries", [])
+                    total_entries += len(entries) if isinstance(entries, list) else 0
+            except Exception:
+                pass
+            lines.append(f"• movie pool entries: {total_entries}")
+            try:
+                any_payload = next(iter(pool.values()))
+                msg = any_payload.get("message") if isinstance(any_payload, dict) else None
+                if isinstance(msg, dict) and msg.get("channel_id") and msg.get("message_id"):
+                    lines.append("• pool public message: present")
+            except Exception:
+                pass
+        else:
+            lines.append("• movie pool: not found")
+
+        for key, label in [
+            ("STICKY_DATA", "stickies"),
+            ("DEADCHAT_DATA", "deadchat timestamps"),
+            ("DEADCHAT_STATE", "deadchat state"),
+            ("PLAGUE_DATA", "plague state"),
+            ("ACTIVITY_DATA", "activity data"),
+            ("CONFIG_DATA", "config data"),
+            ("PRIZE_MOVIE_DATA", "prize movie"),
+            ("PRIZE_NITRO_DATA", "prize nitro"),
+            ("PRIZE_STEAM_DATA", "prize steam"),
+            ("MEMBERJOIN_DATA", "member join data"),
+            ("TWITCH_STATE", "twitch state"),
+        ]:
+            val = raw.get(key)
+            if val is None:
+                lines.append(f"• {label}: not found")
+            else:
+                try:
+                    lines.append(f"• {label}: present ({len(val)})")
+                except Exception:
+                    lines.append(f"• {label}: present")
+
+        if errs:
+            lines.append("• errors:")
+            for e in errs[:5]:
+                lines.append(f"  - {e}")
+
+        await interaction.response.send_message(
+            "Legacy preview (no DB writes):\n" + "\n".join(lines),
+            ephemeral=True,
+        )
         return
+
 
     if action == "timezone_set":
         await upsert_timezone(guild_id, timezone_set)
