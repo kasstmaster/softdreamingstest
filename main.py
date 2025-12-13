@@ -27,6 +27,14 @@ ACTIVE_THRESHOLD_CHOICES = [
     discord.app_commands.Choice(name="24 hours", value=1440),
 ]
 
+# Voice role link modes
+# - add_on_join: add role when user joins voice channel, remove when they leave
+# - remove_on_join: remove role when user joins voice channel, add when they leave
+VOICE_MODE_CHOICES = [
+    discord.app_commands.Choice(name="Add role on join (remove on leave)", value="add_on_join"),
+    discord.app_commands.Choice(name="Remove role on join (add on leave)", value="remove_on_join"),
+]
+
 DEADCHAT_IDLE_CHOICES = [
     discord.app_commands.Choice(name="5 minutes", value=5),
     discord.app_commands.Choice(name="10 minutes", value=10),
