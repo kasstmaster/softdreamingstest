@@ -3365,10 +3365,7 @@ bot.tree.add_command(status_group2)
 bot.tree.add_command(active_group)
 
 
-
 bot.tree.add_command(timezone_group)
-
-bot.tree.add_command(welcome_cfg_group)
 
 
 ############### ON_READY & BOT START ###############
