@@ -8,33 +8,12 @@ import asyncpg
 import discord
 from discord.ext import commands
 
-############### MESSAGE TEMPLATES ###############
-MSG = {
-    # Dead Chat
-    "deadchat_awarded": "💀 {user} revived the chat and stole **Dead Chat**!",
-
-    # Plague
-    "plague_infected": "☣️ **Plague Day!** {user} has been infected for **{days} days**.",
-
-    # Prize
-    "prize_drop": "🎁 Prize Drop! First to claim it wins.",
-    "prize_claimed_channel": "🏆 {user} claimed **{prize}**!",
-
-    # Birthday
-    "birthday_announce": "🎉 Happy Birthday {user}! 🎂",
-
-    # Welcome
-    "welcome": "Welcome to the server, {user}! 👋",
-
-    # QOTD
-    "qotd_header": "❓ **Question of the Day**",
-}
-
 ############### CONSTANTS & CONFIG ###############
 DATABASE_URL = os.getenv("DATABASE_URL")
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 
 # Only allow certain actions in these guild(s)
+# Set DEV_GUILD_ID in your environment (recommended), or hardcode IDs into the set.
 DEV_GUILD_IDS = {
     int(os.getenv("DEV_GUILD_ID", "0")),
     # 123456789012345678,
@@ -57,6 +36,9 @@ ACTIVE_THRESHOLD_CHOICES = [
     discord.app_commands.Choice(name="24 hours", value=1440),
 ]
 
+# Voice role link modes
+# - add_on_join: add role when user joins voice channel, remove when they leave
+# - remove_on_join: remove role when user joins voice channel, add when they leave
 VOICE_MODE_CHOICES = [
     discord.app_commands.Choice(name="Add role on join (remove on leave)", value="add_on_join"),
     discord.app_commands.Choice(name="Remove role on join (add on leave)", value="remove_on_join"),
@@ -158,7 +140,15 @@ ALTER TABLE guild_settings
   ADD COLUMN IF NOT EXISTS prize_drop_channel_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS winner_announce_channel_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS logging_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS modlog_channel_id BIGINT NULL;
+  ADD COLUMN IF NOT EXISTS modlog_channel_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS movies_mode TEXT NOT NULL DEFAULT 'public_manual',
+  ADD COLUMN IF NOT EXISTS movies_per_user_limit INT NOT NULL DEFAULT 3,
+  ADD COLUMN IF NOT EXISTS movies_pool_channel_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS movies_pool_message_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS movies_announce_channel_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS movies_announce_channel2_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS movies_library_channel_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS movies_sheet_csv_url TEXT NULL;
 """
 
 MEMBER_ACTIVITY_SQL = """
@@ -352,6 +342,80 @@ CREATE TABLE IF NOT EXISTS qotd_history (
   PRIMARY KEY (guild_id, posted_on)
 );
 """
+
+
+MOVIE_POOL_PICKS_SQL = """
+CREATE TABLE IF NOT EXISTS movie_pool_picks (
+  pick_id BIGSERIAL PRIMARY KEY,
+  guild_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  title TEXT NOT NULL,
+  title_norm TEXT NOT NULL,
+  sheet_row_id TEXT NULL,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+MOVIE_POOL_PICKS_INDEXES_SQL = """
+-- Prevent duplicates for manual picks (public): same normalized title in same guild where sheet_row_id is NULL
+CREATE UNIQUE INDEX IF NOT EXISTS ux_movie_pool_manual_title
+  ON movie_pool_picks (guild_id, title_norm)
+  WHERE sheet_row_id IS NULL;
+
+-- Prevent duplicates for library-backed picks (dev): same sheet_row_id in same guild
+CREATE UNIQUE INDEX IF NOT EXISTS ux_movie_pool_sheet_row
+  ON movie_pool_picks (guild_id, sheet_row_id)
+  WHERE sheet_row_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_movie_pool_user
+  ON movie_pool_picks (guild_id, user_id);
+"""
+
+MOVIE_POOL_STATE_SQL = """
+CREATE TABLE IF NOT EXISTS movie_pool_state (
+  guild_id BIGINT PRIMARY KEY,
+  display_channel_id BIGINT NULL,
+  display_message_id BIGINT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+MOVIE_LIBRARY_ITEMS_SQL = """
+CREATE TABLE IF NOT EXISTS movie_library_items (
+  guild_id BIGINT NOT NULL,
+  sheet_row_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  title_norm TEXT NOT NULL,
+  poster_url TEXT NULL,
+  trailer_url TEXT NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (guild_id, sheet_row_id)
+);
+"""
+
+MOVIE_LIBRARY_MESSAGES_SQL = """
+CREATE TABLE IF NOT EXISTS movie_library_messages (
+  guild_id BIGINT NOT NULL,
+  sheet_row_id TEXT NOT NULL,
+  channel_id BIGINT NOT NULL,
+  message_id BIGINT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (guild_id, sheet_row_id)
+);
+"""
+
+MOVIE_NIGHT_HISTORY_SQL = """
+CREATE TABLE IF NOT EXISTS movie_night_history (
+  guild_id BIGINT NOT NULL,
+  picked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  title TEXT NOT NULL,
+  title_norm TEXT NOT NULL,
+  sheet_row_id TEXT NULL,
+  picked_by_user_id BIGINT NULL
+);
+"""
+
 
 REQUIRED_TABLES = [
     "guild_settings",
@@ -581,6 +645,12 @@ async def init_db():
         await conn.execute(AUTODELETE_IGNORE_PHRASES_SQL)
         await conn.execute(VOICE_ROLE_LINKS_SQL)
         await conn.execute(QOTD_HISTORY_SQL)
+        await conn.execute(MOVIE_POOL_PICKS_SQL)
+        await conn.execute(MOVIE_POOL_PICKS_INDEXES_SQL)
+        await conn.execute(MOVIE_POOL_STATE_SQL)
+        await conn.execute(MOVIE_LIBRARY_ITEMS_SQL)
+        await conn.execute(MOVIE_LIBRARY_MESSAGES_SQL)
+        await conn.execute(MOVIE_NIGHT_HISTORY_SQL)
 
 async def close_db():
     global db_pool
@@ -1401,9 +1471,8 @@ async def deadchat_attempt_award(bot: commands.Bot, message: discord.Message) ->
                 await old_msg.delete()
             except Exception:
                 pass
-        text = MSG["deadchat_awarded"]
-        text = format_template(text, message.author)
-        sent = await message.channel.send(text)
+        announce_text = f"💀 {message.author.mention} revived the chat and stole **Dead Chat**!"
+        sent = None
         try:
             sent = await message.channel.send(announce_text)
         except Exception:
@@ -1419,18 +1488,21 @@ async def deadchat_attempt_award(bot: commands.Bot, message: discord.Message) ->
 async def maybe_trigger_plague(guild: discord.Guild, winner_user_id: int, source_channel_id: int) -> None:
     settings = await get_guild_settings(int(guild.id))
 
+    # Feature must be enabled and scheduled
     if not settings.get("plague_enabled"):
         return
     scheduled_day = settings.get("plague_scheduled_day")
     if not scheduled_day:
         return
 
+    # Plague day is evaluated in UTC, and only triggers after 12:00 UTC
     utc_now = now_utc()
     if utc_now.date() != scheduled_day:
         return
     if utc_now.hour < 12:
         return
 
+    # Only trigger once per day (restart-safe)
     if await plague_daily_already_triggered(int(guild.id), scheduled_day):
         return
 
@@ -1452,15 +1524,15 @@ async def maybe_trigger_plague(guild: discord.Guild, winner_user_id: int, source
     except Exception:
         return
 
+    # Persist infection + mark consumed for the day
     await plague_add_infection(int(guild.id), winner_user_id, expires_at, source_channel_id)
     await plague_mark_triggered(int(guild.id), scheduled_day, winner_user_id)
 
+    # Announce in the same Dead Chat channel (silent expiry later)
     channel = guild.get_channel(int(source_channel_id))
     if channel:
         try:
-            text = MSG["plague_infected"].replace("{days}", "3")
-            text = format_template(text, member)
-            await channel.send(text)
+            await channel.send(f"☣️ **Plague Day!** {member.mention} has been infected for **3 days**.")
         except Exception:
             pass
 
@@ -1486,7 +1558,7 @@ async def maybe_trigger_prize_drop(guild: discord.Guild, winner_user_id: int) ->
             embed.set_image(url=prize["image_url"])
         except Exception:
             pass
-    content = MSG["prize_drop"]
+    content = f"🎁 Prize Drop! First to claim it wins."
     try:
         msg = await channel.send(content=content, embed=embed, view=view)
     except Exception:
@@ -1550,9 +1622,11 @@ class PrizeClaimView(discord.ui.View):
         title = prize["title"] if prize else "Prize"
         await interaction.response.send_message(f"✅ You claimed **{title}**!", ephemeral=True)
         try:
-            text = MSG["prize_claimed_channel"].replace("{prize}", title)
-            text = format_template(text, interaction.user)
-            await interaction.channel.send(text)
+            await interaction.channel.send(f"🏆 {interaction.user.mention} claimed **{title}**!")
+        except Exception:
+            pass
+        try:
+            await interaction.user.send(f"✅ You claimed **{title}** in **{interaction.guild.name}**.")
         except Exception:
             pass
 
@@ -1616,6 +1690,7 @@ async def schedule_autocomplete(interaction: discord.Interaction, current: str):
 ############### BACKGROUND TASKS & SCHEDULERS ###############
 
 async def birthday_daily_loop(bot: commands.Bot):
+    # Runs once per minute, triggers on local midnight per guild timezone.
     last_seen: dict[int, date] = {}
     while not bot.is_closed():
         try:
@@ -1638,11 +1713,14 @@ async def birthday_daily_loop(bot: commands.Bot):
                 if not r.get("birthday_role_id") or not r.get("birthday_channel_id"):
                     continue
 
+                # remove birthday role from anyone who has it but isn't birthday today
                 role_id = r["birthday_role_id"]
                 role = guild.get_role(int(role_id)) if role_id else None
 
+                # announce + assign role for today's birthdays
                 bdays = await birthday_list_all(guild_id)
                 todays = [b for b in bdays if int(b["month"]) == today.month and int(b["day"]) == today.day]
+                # role cleanup first
                 if role:
                     try:
                         for m in role.members:
@@ -1655,8 +1733,9 @@ async def birthday_daily_loop(bot: commands.Bot):
                     await update_birthday_list_message(bot, guild_id)
                     continue
 
+                # send announcements
                 channel = guild.get_channel(int(r["birthday_channel_id"])) if r["birthday_channel_id"] else None
-                msg_t = r["birthday_message_text"] or MSG["birthday_announce"]
+                msg_t = r["birthday_message_text"] or "🎉 Happy Birthday {user}! 🎂"
 
                 for b in todays:
                     uid = int(b["user_id"])
@@ -1722,6 +1801,7 @@ async def qotd_daily_loop(bot: commands.Bot):
                 guild_id = int(r["guild_id"])
                 tz = r["timezone"] or "America/Los_Angeles"
                 today = guild_now(tz).date()
+                # post at ~09:00 local time
                 now_local = guild_now(tz)
                 if now_local.hour != 9:
                     continue
@@ -1753,9 +1833,9 @@ async def qotd_daily_loop(bot: commands.Bot):
                         pick = q
                         break
                 if pick is None:
-                    pick = questions[0] 
+                    pick = questions[0]  # fall back
 
-                prefix = r["qotd_message_prefix"] or MSG["qotd_header"]
+                prefix = r["qotd_message_prefix"] or "❓ **Question of the Day**"
                 role_ping = ""
                 if r["qotd_role_id"]:
                     role = guild.get_role(int(r["qotd_role_id"]))
@@ -1781,6 +1861,10 @@ async def schedule_message_delete(message: discord.Message, delay_seconds: int, 
             await asyncio.sleep(max(1, delay_seconds))
             try:
                 await message.delete()
+                if log_channel_id:
+                    ch = message.guild.get_channel(int(log_channel_id))
+                    if ch:
+                        await ch.send(f"🗑️ Deleted message in <#{message.channel.id}> from {message.author.mention}")
             except Exception:
                 pass
         finally:
@@ -2067,10 +2151,12 @@ async def qotd_recent_hashes(guild_id: int, limit: int = 200) -> set[str]:
     return {r["question_hash"] for r in rows}
 
 async def fetch_questions_from_source(source_url: str) -> list[str]:
+    # Supports: (1) raw text with one question per line, or (2) CSV with first column 'question'
     async with aiohttp.ClientSession() as session:
         async with session.get(source_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
             resp.raise_for_status()
             txt = await resp.text()
+    # basic CSV detection
     if "," in txt.splitlines()[0]:
         out=[]
         for line in txt.splitlines()[1:]:
@@ -2084,6 +2170,426 @@ async def fetch_questions_from_source(source_url: str) -> list[str]:
 
 def format_template(t: str, user: discord.abc.User) -> str:
     return (t or "").replace("{user}", user.mention).replace("{name}", user.display_name)
+
+
+
+############### MOVIE NIGHT (PUBLIC + DEV) ###############
+
+def normalize_title(t: str) -> str:
+    return " ".join((t or "").strip().lower().split())
+
+async def get_movies_config(guild_id: int) -> dict:
+    await ensure_guild_row(guild_id)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT movies_mode, movies_per_user_limit,
+                   movies_pool_channel_id, movies_pool_message_id,
+                   movies_announce_channel_id, movies_announce_channel2_id,
+                   movies_library_channel_id, movies_sheet_csv_url
+            FROM guild_settings
+            WHERE guild_id = $1;
+            """,
+            guild_id,
+        )
+    return {
+        "movies_mode": (row["movies_mode"] or "public_manual"),
+        "movies_per_user_limit": int(row["movies_per_user_limit"] or 3),
+        "movies_pool_channel_id": row["movies_pool_channel_id"],
+        "movies_pool_message_id": row["movies_pool_message_id"],
+        "movies_announce_channel_id": row["movies_announce_channel_id"],
+        "movies_announce_channel2_id": row["movies_announce_channel2_id"],
+        "movies_library_channel_id": row["movies_library_channel_id"],
+        "movies_sheet_csv_url": row["movies_sheet_csv_url"],
+    }
+
+async def set_movies_config(
+    guild_id: int,
+    *,
+    movies_mode: str | None = None,
+    per_user_limit: int | None = None,
+    pool_channel_id: int | None = None,
+    announce_channel_id: int | None = None,
+    announce_channel2_id: int | None = None,
+    library_channel_id: int | None = None,
+    sheet_csv_url: str | None = None,
+) -> None:
+    await ensure_guild_row(guild_id)
+    fields = []
+    vals = [guild_id]
+    def add(col, val):
+        fields.append(f"{col} = ${len(vals)+1}")
+        vals.append(val)
+
+    if movies_mode is not None:
+        add("movies_mode", movies_mode)
+    if per_user_limit is not None:
+        add("movies_per_user_limit", int(per_user_limit))
+    if pool_channel_id is not None:
+        add("movies_pool_channel_id", int(pool_channel_id))
+    if announce_channel_id is not None:
+        add("movies_announce_channel_id", int(announce_channel_id))
+    if announce_channel2_id is not None:
+        add("movies_announce_channel2_id", int(announce_channel2_id))
+    if library_channel_id is not None:
+        add("movies_library_channel_id", int(library_channel_id))
+    if sheet_csv_url is not None:
+        add("movies_sheet_csv_url", sheet_csv_url)
+
+    if not fields:
+        return
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            f"UPDATE guild_settings SET {', '.join(fields)}, updated_at = NOW() WHERE guild_id = $1;",
+            *vals,
+        )
+
+async def require_dev_guild(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return False
+    if int(interaction.guild.id) not in DEV_GUILD_IDS:
+        await interaction.response.send_message(
+            "❌ This option is only available in the developer server.",
+            ephemeral=True,
+        )
+        return False
+    return True
+
+async def movie_pool_count_for_user(guild_id: int, user_id: int, *, dev_mode: bool) -> int:
+    async with db_pool.acquire() as conn:
+        if dev_mode:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS c FROM movie_pool_picks WHERE guild_id=$1 AND user_id=$2 AND sheet_row_id IS NOT NULL;",
+                guild_id, user_id
+            )
+        else:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS c FROM movie_pool_picks WHERE guild_id=$1 AND user_id=$2 AND sheet_row_id IS NULL;",
+                guild_id, user_id
+            )
+    return int(row["c"] or 0)
+
+async def movie_pool_add_manual(guild_id: int, user_id: int, title: str, *, per_user_limit: int) -> tuple[bool, str]:
+    title = (title or "").strip()
+    if not title:
+        return False, "❌ Please provide a movie title."
+    title_norm = normalize_title(title)
+    async with db_pool.acquire() as conn:
+        # duplicate?
+        exists = await conn.fetchrow(
+            "SELECT 1 FROM movie_pool_picks WHERE guild_id=$1 AND sheet_row_id IS NULL AND title_norm=$2;",
+            guild_id, title_norm
+        )
+        if exists:
+            return False, "❌ That title is already in the pool."
+        # limit?
+        c = await conn.fetchrow(
+            "SELECT COUNT(*) AS c FROM movie_pool_picks WHERE guild_id=$1 AND user_id=$2 AND sheet_row_id IS NULL;",
+            guild_id, user_id
+        )
+        if int(c["c"] or 0) >= per_user_limit:
+            return False, f"❌ You’ve reached the pick limit ({per_user_limit}). Remove or replace a pick first."
+        await conn.execute(
+            "INSERT INTO movie_pool_picks (guild_id, user_id, title, title_norm, sheet_row_id) VALUES ($1,$2,$3,$4,NULL);",
+            guild_id, user_id, title, title_norm
+        )
+    return True, "✅ Added to the pool."
+
+async def movie_pool_remove_manual(guild_id: int, user_id: int, title: str) -> tuple[bool, str]:
+    title_norm = normalize_title(title)
+    async with db_pool.acquire() as conn:
+        res = await conn.execute(
+            "DELETE FROM movie_pool_picks WHERE guild_id=$1 AND user_id=$2 AND sheet_row_id IS NULL AND title_norm=$3;",
+            guild_id, user_id, title_norm
+        )
+    # asyncpg returns 'DELETE <n>'
+    n = int(res.split()[-1]) if res else 0
+    if n == 0:
+        return False, "❌ I couldn’t find that pick under your name."
+    return True, "✅ Removed your pick."
+
+async def movie_pool_replace_manual(guild_id: int, user_id: int, old_title: str, new_title: str, *, per_user_limit: int) -> tuple[bool, str]:
+    ok, msg = await movie_pool_remove_manual(guild_id, user_id, old_title)
+    if not ok:
+        return False, msg
+    ok2, msg2 = await movie_pool_add_manual(guild_id, user_id, new_title, per_user_limit=per_user_limit)
+    if not ok2:
+        # rollback removal by re-adding old (best effort)
+        await movie_pool_add_manual(guild_id, user_id, old_title, per_user_limit=per_user_limit)
+        return False, msg2
+    return True, "✅ Replaced your pick."
+
+async def movie_pool_fetch(guild: discord.Guild, *, dev_mode: bool) -> list[dict]:
+    async with db_pool.acquire() as conn:
+        if dev_mode:
+            rows = await conn.fetch(
+                "SELECT user_id, title, sheet_row_id, added_at FROM movie_pool_picks WHERE guild_id=$1 AND sheet_row_id IS NOT NULL;",
+                int(guild.id)
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT user_id, title, sheet_row_id, added_at FROM movie_pool_picks WHERE guild_id=$1 AND sheet_row_id IS NULL;",
+                int(guild.id)
+            )
+    out = []
+    for r in rows:
+        out.append({
+            "user_id": int(r["user_id"]),
+            "title": r["title"],
+            "sheet_row_id": r["sheet_row_id"],
+            "added_at": r["added_at"],
+        })
+    return out
+
+def build_movie_pool_embed(guild: discord.Guild, picks: list[dict], *, title: str = "🎬 Movie Night Pool") -> discord.Embed:
+    # Group by user, sort by display name
+    groups: dict[int, list[str]] = {}
+    for p in picks:
+        groups.setdefault(p["user_id"], []).append(p["title"])
+
+    items = []
+    for uid, titles in groups.items():
+        member = guild.get_member(uid)
+        display = member.display_name if member else f"User {uid}"
+        items.append((display.lower(), display, uid, titles))
+
+    items.sort(key=lambda x: x[0])
+
+    lines = []
+    for _, display, uid, titles in items:
+        # username first, titles after
+        joined = " • ".join(titles)
+        lines.append(f"**{display}** — {joined}")
+
+    desc = "\n".join(lines) if lines else "_No picks yet._"
+    e = discord.Embed(title=title, description=desc)
+    e.set_footer(text=f"{len(picks)} pick(s)")
+    return e
+
+async def movie_pool_update_display(bot: commands.Bot, guild_id: int, *, dev_mode: bool) -> None:
+    cfg = await get_movies_config(guild_id)
+    ch_id = cfg.get("movies_pool_channel_id")
+    msg_id = cfg.get("movies_pool_message_id")
+    if not ch_id or not msg_id:
+        return
+
+    guild = bot.get_guild(int(guild_id))
+    if not guild:
+        return
+    channel = guild.get_channel(int(ch_id))
+    if not channel:
+        return
+    try:
+        msg = await channel.fetch_message(int(msg_id))
+    except Exception:
+        return
+
+    picks = await movie_pool_fetch(guild, dev_mode=dev_mode)
+    embed = build_movie_pool_embed(guild, picks)
+    try:
+        await msg.edit(embed=embed)
+    except Exception:
+        pass
+
+async def movie_pool_set_display_message(guild_id: int, channel_id: int, message_id: int) -> None:
+    await ensure_guild_row(guild_id)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE guild_settings SET movies_pool_channel_id=$2, movies_pool_message_id=$3, updated_at=NOW() WHERE guild_id=$1;",
+            guild_id, int(channel_id), int(message_id)
+        )
+        await conn.execute(
+            "INSERT INTO movie_pool_state (guild_id, display_channel_id, display_message_id, updated_at) VALUES ($1,$2,$3,NOW()) "
+            "ON CONFLICT (guild_id) DO UPDATE SET display_channel_id=EXCLUDED.display_channel_id, display_message_id=EXCLUDED.display_message_id, updated_at=NOW();",
+            guild_id, int(channel_id), int(message_id)
+        )
+
+async def movie_pool_pick_random(guild: discord.Guild, *, dev_mode: bool) -> dict | None:
+    async with db_pool.acquire() as conn:
+        if dev_mode:
+            row = await conn.fetchrow(
+                "SELECT pick_id, user_id, title, title_norm, sheet_row_id FROM movie_pool_picks WHERE guild_id=$1 AND sheet_row_id IS NOT NULL ORDER BY RANDOM() LIMIT 1;",
+                int(guild.id)
+            )
+        else:
+            row = await conn.fetchrow(
+                "SELECT pick_id, user_id, title, title_norm, sheet_row_id FROM movie_pool_picks WHERE guild_id=$1 AND sheet_row_id IS NULL ORDER BY RANDOM() LIMIT 1;",
+                int(guild.id)
+            )
+        if not row:
+            return None
+        await conn.execute("DELETE FROM movie_pool_picks WHERE pick_id=$1;", int(row["pick_id"]))
+        await conn.execute(
+            "INSERT INTO movie_night_history (guild_id, title, title_norm, sheet_row_id, picked_by_user_id) VALUES ($1,$2,$3,$4,$5);",
+            int(guild.id), row["title"], row["title_norm"], row["sheet_row_id"], int(row["user_id"])
+        )
+    return {
+        "user_id": int(row["user_id"]),
+        "title": row["title"],
+        "sheet_row_id": row["sheet_row_id"],
+    }
+
+
+
+async def fetch_movies_from_csv(csv_url: str) -> list[dict]:
+    if not csv_url:
+        return []
+    async with aiohttp.ClientSession() as session:
+        async with session.get(csv_url) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Sheet fetch failed (HTTP {resp.status})")
+            text = await resp.text()
+
+    f = io.StringIO(text)
+    reader = csv.DictReader(f)
+    rows = []
+    # Try common header names
+    for i, r in enumerate(reader, start=2):  # start=2 to match row numbers after header
+        title = (r.get("title") or r.get("Title") or r.get("name") or r.get("Name") or "").strip()
+        if not title:
+            continue
+        poster = (r.get("poster") or r.get("Poster") or r.get("poster_url") or r.get("Poster URL") or r.get("image") or "").strip() or None
+        trailer = (r.get("trailer") or r.get("Trailer") or r.get("trailer_url") or r.get("Trailer URL") or r.get("link") or "").strip() or None
+        sheet_row_id = str(r.get("row_id") or r.get("Row") or i)
+        rows.append({
+            "sheet_row_id": sheet_row_id,
+            "title": title,
+            "title_norm": normalize_title(title),
+            "poster_url": poster,
+            "trailer_url": trailer,
+        })
+    return rows
+
+async def movie_library_reload(guild_id: int, csv_url: str) -> tuple[int, int]:
+    # returns (upserted, deactivated)
+    items = await fetch_movies_from_csv(csv_url)
+    incoming = {it["sheet_row_id"]: it for it in items}
+
+    async with db_pool.acquire() as conn:
+        # mark all inactive first, then reactivate/insert present rows
+        await conn.execute(
+            "UPDATE movie_library_items SET active=FALSE, updated_at=NOW() WHERE guild_id=$1;",
+            guild_id
+        )
+        upserted = 0
+        for it in items:
+            await conn.execute(
+                """
+                INSERT INTO movie_library_items (guild_id, sheet_row_id, title, title_norm, poster_url, trailer_url, active, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,TRUE,NOW())
+                ON CONFLICT (guild_id, sheet_row_id)
+                DO UPDATE SET title=EXCLUDED.title, title_norm=EXCLUDED.title_norm, poster_url=EXCLUDED.poster_url,
+                              trailer_url=EXCLUDED.trailer_url, active=TRUE, updated_at=NOW();
+                """,
+                guild_id, it["sheet_row_id"], it["title"], it["title_norm"], it["poster_url"], it["trailer_url"]
+            )
+            upserted += 1
+
+        # how many got deactivated?
+        row = await conn.fetchrow(
+            "SELECT COUNT(*) AS c FROM movie_library_items WHERE guild_id=$1 AND active=FALSE;",
+            guild_id
+        )
+        deactivated = int(row["c"] or 0)
+
+    return upserted, deactivated
+
+def build_movie_library_embed(item: dict) -> discord.Embed:
+    e = discord.Embed(title=item["title"])
+    if item.get("trailer_url"):
+        e.description = f"[Trailer]({item['trailer_url']})"
+    if item.get("poster_url"):
+        try:
+            e.set_image(url=item["poster_url"])
+        except Exception:
+            pass
+    return e
+
+def build_movie_add_view(guild_id: int, sheet_row_id: str) -> discord.ui.View:
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(
+        label="Add to Pool",
+        style=discord.ButtonStyle.success,
+        custom_id=f"movie_add:{guild_id}:{sheet_row_id}",
+    ))
+    return v
+
+async def movie_library_sync_channel(bot: commands.Bot, guild_id: int, channel_id: int) -> tuple[int, int, int]:
+    # returns (created, edited, missing_channel)
+    guild = bot.get_guild(int(guild_id))
+    if not guild:
+        return 0, 0, 1
+    channel = guild.get_channel(int(channel_id))
+    if not channel:
+        return 0, 0, 1
+
+    async with db_pool.acquire() as conn:
+        items = await conn.fetch(
+            "SELECT sheet_row_id, title, poster_url, trailer_url FROM movie_library_items WHERE guild_id=$1 AND active=TRUE ORDER BY title_norm ASC;",
+            guild_id
+        )
+        msg_map = {r["sheet_row_id"]: r for r in await conn.fetch(
+            "SELECT sheet_row_id, channel_id, message_id FROM movie_library_messages WHERE guild_id=$1;",
+            guild_id
+        )}
+
+    created = 0
+    edited = 0
+    for it in items:
+        item = {
+            "sheet_row_id": it["sheet_row_id"],
+            "title": it["title"],
+            "poster_url": it["poster_url"],
+            "trailer_url": it["trailer_url"],
+        }
+        embed = build_movie_library_embed(item)
+        view = build_movie_add_view(guild_id, item["sheet_row_id"])
+
+        existing = msg_map.get(item["sheet_row_id"])
+        if existing and int(existing["channel_id"]) == int(channel_id):
+            try:
+                msg = await channel.fetch_message(int(existing["message_id"]))
+                await msg.edit(embed=embed, view=view)
+                edited += 1
+            except Exception:
+                # fall through to create new
+                existing = None
+
+        if not existing:
+            try:
+                msg = await channel.send(embed=embed, view=view)
+                created += 1
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO movie_library_messages (guild_id, sheet_row_id, channel_id, message_id, updated_at)
+                        VALUES ($1,$2,$3,$4,NOW())
+                        ON CONFLICT (guild_id, sheet_row_id)
+                        DO UPDATE SET channel_id=EXCLUDED.channel_id, message_id=EXCLUDED.message_id, updated_at=NOW();
+                        """,
+                        guild_id, item["sheet_row_id"], int(channel_id), int(msg.id)
+                    )
+            except Exception:
+                pass
+
+    return created, edited, 0
+
+async def register_movie_library_views(bot: commands.Bot) -> None:
+    # Register persistent views for existing library messages in DEV guild(s)
+    for gid in DEV_GUILD_IDS:
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT sheet_row_id, channel_id, message_id FROM movie_library_messages WHERE guild_id=$1;",
+                int(gid)
+            )
+        for r in rows:
+            try:
+                v = build_movie_add_view(int(gid), str(r["sheet_row_id"]))
+                bot.add_view(v, message_id=int(r["message_id"]))
+            except Exception:
+                pass
 
 
 ############### EVENT HANDLERS ###############
@@ -2117,11 +2623,13 @@ async def on_message(message: discord.Message):
     except Exception:
         pass
 
+    # Sticky messages
     try:
         s = await sticky_get(guild_id, channel_id)
         if s:
             old_id = s["message_id"]
             content = s["content"]
+            # delete previous sticky if we can
             if old_id:
                 try:
                     old_msg = await message.channel.fetch_message(int(old_id))
@@ -2136,6 +2644,7 @@ async def on_message(message: discord.Message):
     except Exception:
         pass
 
+    # Auto-delete
     try:
         ad = await autodelete_get_channel(guild_id, channel_id)
         if ad:
@@ -2150,6 +2659,78 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    # Handle movie library "Add to Pool" buttons (DEV server only)
+    try:
+        data = getattr(interaction, "data", None) or {}
+        custom_id = data.get("custom_id")
+        if not custom_id or not isinstance(custom_id, str):
+            return
+        if not custom_id.startswith("movie_add:"):
+            return
+
+        parts = custom_id.split(":")
+        if len(parts) != 3:
+            return
+        gid = int(parts[1])
+        sheet_row_id = parts[2]
+
+        if interaction.guild is None or int(interaction.guild.id) != gid:
+            try:
+                await interaction.response.send_message("❌ Wrong server for this button.", ephemeral=True)
+            except Exception:
+                pass
+            return
+
+        if gid not in DEV_GUILD_IDS:
+            try:
+                await interaction.response.send_message("❌ This library feature is not available in this server.", ephemeral=True)
+            except Exception:
+                pass
+            return
+
+        cfg = await get_movies_config(gid)
+        per_user_limit = int(cfg.get("movies_per_user_limit") or 3)
+
+        # Look up library item
+        async with db_pool.acquire() as conn:
+            item = await conn.fetchrow(
+                "SELECT title, title_norm FROM movie_library_items WHERE guild_id=$1 AND sheet_row_id=$2 AND active=TRUE;",
+                gid, sheet_row_id
+            )
+        if not item:
+            await interaction.response.send_message("❌ That movie is no longer in the library.", ephemeral=True)
+            return
+
+        # Enforce per-user limit
+        c = await movie_pool_count_for_user(gid, int(interaction.user.id), dev_mode=True)
+        if c >= per_user_limit:
+            await interaction.response.send_message(
+                f"❌ You’ve reached the pick limit ({per_user_limit}). Remove or replace a pick first.",
+                ephemeral=True
+            )
+            return
+
+        # Insert pick (duplicates prevented by unique index)
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO movie_pool_picks (guild_id, user_id, title, title_norm, sheet_row_id) VALUES ($1,$2,$3,$4,$5);",
+                    gid, int(interaction.user.id), item["title"], item["title_norm"], sheet_row_id
+                )
+        except asyncpg.exceptions.UniqueViolationError:
+            await interaction.response.send_message("❌ That movie is already in the pool.", ephemeral=True)
+            return
+
+        await interaction.response.send_message("✅ Added to the pool.", ephemeral=True)
+        await movie_pool_update_display(bot, gid, dev_mode=True)
+    except Exception:
+        # Never block other interactions
+        return
+
+
 @bot.event
 async def on_member_join(member: discord.Member):
     if member.guild is None:
@@ -2159,6 +2740,7 @@ async def on_member_join(member: discord.Member):
         await ensure_guild_row(guild_id)
         s = await get_guild_extras(guild_id)
 
+        # Auto-roles
         if member.bot and s.get("bot_role_id"):
             role = member.guild.get_role(int(s["bot_role_id"]))
             if role:
@@ -2178,15 +2760,17 @@ async def on_member_join(member: discord.Member):
                         pass
                 asyncio.create_task(_add_later())
 
+        # Welcome message
         if s.get("welcome_enabled") and s.get("welcome_channel_id"):
             ch = member.guild.get_channel(int(s["welcome_channel_id"]))
             if ch:
-                txt = s.get("welcome_message_text") or MSG["welcome"]
+                txt = s.get("welcome_message_text") or "Welcome to the server, {user}! 👋"
                 try:
                     await ch.send(format_template(txt, member))
                 except Exception:
                     pass
 
+        # Log join
         if s.get("logging_enabled") and s.get("modlog_channel_id"):
             ch = member.guild.get_channel(int(s["modlog_channel_id"]))
             if ch:
@@ -2212,6 +2796,7 @@ async def on_member_remove(member: discord.Member):
 
         action = "left"
         actor = None
+        # Try to detect kick via audit log (best-effort)
         try:
             async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
                 if entry.target and int(entry.target.id) == int(member.id):
@@ -2258,6 +2843,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         return
     guild_id = int(member.guild.id)
 
+    # Leaving a linked channel
     if before.channel and (not after.channel or int(after.channel.id) != int(before.channel.id)):
         link = await voice_role_get_link(guild_id, int(before.channel.id))
         if link:
@@ -2271,6 +2857,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 except Exception:
                     pass
 
+    # Joining a linked channel
     if after.channel and (not before.channel or int(before.channel.id) != int(after.channel.id)):
         link = await voice_role_get_link(guild_id, int(after.channel.id))
         if link:
@@ -2312,6 +2899,9 @@ async def _require_one_action(interaction: discord.Interaction, used: list[str],
         return False
     return True
 
+# ------------------------
+# Public (non-admin) command
+# ------------------------
 @bot.tree.command(name="birthday_set", description="Set your birthday (month/day/year)")
 async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: int, year: int | None = None):
     guild_id = require_guild(interaction)
@@ -2319,10 +2909,214 @@ async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: in
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message(f"✅ Birthday saved: {int(month):02d}/{int(day):02d}", ephemeral=True)
 
+# ------------------------
+# Groups
+# ------------------------
 config_group = discord.app_commands.Group(name="config", description="Configuration commands")
 messages_group = discord.app_commands.Group(name="messages", description="Message/announcement commands")
 schedule_group = discord.app_commands.Group(name="schedule", description="Scheduling commands")
+movies_group = discord.app_commands.Group(name="movies", description="Movie Night commands")
 
+
+# ------------------------
+# Public Movie Night commands
+# ------------------------
+@bot.tree.command(name="pick", description="Add a movie title to the Movie Night pool")
+@discord.app_commands.checks.cooldown(rate=2, per=5.0)
+async def movie_pick_cmd(interaction: discord.Interaction, title: str):
+    guild_id = require_guild(interaction)
+    cfg = await get_movies_config(guild_id)
+    mode = cfg.get("movies_mode") or "public_manual"
+    if mode == "dev_library" and int(guild_id) in DEV_GUILD_IDS:
+        await interaction.response.send_message("❌ In this server, add picks using the library buttons.", ephemeral=True)
+        return
+
+    ok, msg = await movie_pool_add_manual(
+        guild_id,
+        int(interaction.user.id),
+        title,
+        per_user_limit=int(cfg.get("movies_per_user_limit") or 3),
+    )
+    await interaction.response.send_message(msg, ephemeral=True)
+    if ok:
+        await movie_pool_update_display(bot, guild_id, dev_mode=False)
+
+@bot.tree.command(name="unpick", description="Remove one of your movie picks from the pool")
+@discord.app_commands.checks.cooldown(rate=2, per=5.0)
+async def movie_unpick_cmd(interaction: discord.Interaction, title: str):
+    guild_id = require_guild(interaction)
+    cfg = await get_movies_config(guild_id)
+    mode = cfg.get("movies_mode") or "public_manual"
+    if mode == "dev_library" and int(guild_id) in DEV_GUILD_IDS:
+        await interaction.response.send_message("❌ In this server, remove picks using the pool tools (coming soon).", ephemeral=True)
+        return
+
+    ok, msg = await movie_pool_remove_manual(guild_id, int(interaction.user.id), title)
+    await interaction.response.send_message(msg, ephemeral=True)
+    if ok:
+        await movie_pool_update_display(bot, guild_id, dev_mode=False)
+
+@bot.tree.command(name="replace_pick", description="Replace one of your movie picks with a new title")
+@discord.app_commands.checks.cooldown(rate=2, per=5.0)
+async def movie_replace_pick_cmd(interaction: discord.Interaction, old_title: str, new_title: str):
+    guild_id = require_guild(interaction)
+    cfg = await get_movies_config(guild_id)
+    mode = cfg.get("movies_mode") or "public_manual"
+    if mode == "dev_library" and int(guild_id) in DEV_GUILD_IDS:
+        await interaction.response.send_message("❌ In this server, add picks using the library buttons.", ephemeral=True)
+        return
+
+    ok, msg = await movie_pool_replace_manual(
+        guild_id,
+        int(interaction.user.id),
+        old_title,
+        new_title,
+        per_user_limit=int(cfg.get("movies_per_user_limit") or 3),
+    )
+    await interaction.response.send_message(msg, ephemeral=True)
+    if ok:
+        await movie_pool_update_display(bot, guild_id, dev_mode=False)
+
+@bot.tree.command(name="pool", description="Show the current Movie Night pool")
+@discord.app_commands.checks.cooldown(rate=2, per=5.0)
+async def movie_pool_cmd(interaction: discord.Interaction):
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    guild_id = int(guild.id)
+    cfg = await get_movies_config(guild_id)
+    mode = cfg.get("movies_mode") or "public_manual"
+    dev_mode = (mode == "dev_library" and guild_id in DEV_GUILD_IDS)
+
+    picks = await movie_pool_fetch(guild, dev_mode=dev_mode)
+    embed = build_movie_pool_embed(guild, picks)
+
+    # If a persistent pool message is configured, update it and send an ephemeral confirmation.
+    ch_id = cfg.get("movies_pool_channel_id")
+    msg_id = cfg.get("movies_pool_message_id")
+    if ch_id and msg_id:
+        await movie_pool_update_display(bot, guild_id, dev_mode=dev_mode)
+        await interaction.response.send_message("✅ Pool display updated.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="random", description="Pick a random winner from the Movie Night pool")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+async def movie_random_cmd(interaction: discord.Interaction):
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    guild_id = int(guild.id)
+    cfg = await get_movies_config(guild_id)
+    mode = cfg.get("movies_mode") or "public_manual"
+    dev_mode = (mode == "dev_library" and guild_id in DEV_GUILD_IDS)
+
+    pick = await movie_pool_pick_random(guild, dev_mode=dev_mode)
+    if not pick:
+        await interaction.response.send_message("❌ The pool is empty.", ephemeral=True)
+        return
+
+    member = guild.get_member(int(pick["user_id"]))
+    mention = member.mention if member else f"<@{pick['user_id']}>"
+    rollover_text = "All other picks roll over to the next pool."
+    content = f"**Pool Winner: {pick['title']}**\n{mention}'s pick! {rollover_text}"
+
+    # Public: announce where used. Dev: announce in up to 2 configured channels (fall back to current)
+    channels = []
+    if dev_mode:
+        if cfg.get("movies_announce_channel_id"):
+            ch = guild.get_channel(int(cfg["movies_announce_channel_id"]))
+            if ch:
+                channels.append(ch)
+        if cfg.get("movies_announce_channel2_id"):
+            ch2 = guild.get_channel(int(cfg["movies_announce_channel2_id"]))
+            if ch2 and ch2 not in channels:
+                channels.append(ch2)
+
+    if not channels:
+        channels = [interaction.channel] if interaction.channel else []
+
+    # Respond/announce
+    sent_any = False
+    for ch in channels:
+        try:
+            await ch.send(content)
+            sent_any = True
+        except Exception:
+            pass
+
+    if not sent_any:
+        await interaction.response.send_message(content)
+    else:
+        await interaction.response.send_message("✅ Winner selected!", ephemeral=True)
+
+    await movie_pool_update_display(bot, guild_id, dev_mode=dev_mode)
+
+# ------------------------
+# Dev (library) commands
+# ------------------------
+@discord.app_commands.default_permissions(manage_guild=True)
+@movies_group.command(name="library_reload", description="Reload the movie library from the configured CSV URL (DEV server only)")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def movies_library_reload_cmd(interaction: discord.Interaction):
+    if not await require_dev_guild(interaction):
+        return
+    guild_id = int(interaction.guild.id)
+    cfg = await get_movies_config(guild_id)
+    url = cfg.get("movies_sheet_csv_url")
+    if not url:
+        await interaction.response.send_message("❌ Set `sheet_csv_url` first with `/config movies sheet_csv_url:...`", ephemeral=True)
+        return
+    try:
+        upserted, deactivated = await movie_library_reload(guild_id, url)
+        await interaction.response.send_message(f"✅ Library reloaded. Upserted: {upserted} • Deactivated: {deactivated}", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Reload failed: {e}", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@movies_group.command(name="library_sync", description="Sync one message per movie into the library channel (DEV server only)")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def movies_library_sync_cmd(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+    if not await require_dev_guild(interaction):
+        return
+    guild_id = int(interaction.guild.id)
+    cfg = await get_movies_config(guild_id)
+    ch = channel or (interaction.guild.get_channel(int(cfg["movies_library_channel_id"])) if cfg.get("movies_library_channel_id") else None) or interaction.channel
+    if ch is None:
+        await interaction.response.send_message("❌ Could not determine a channel.", ephemeral=True)
+        return
+    created, edited, missing = await movie_library_sync_channel(bot, guild_id, int(ch.id))
+    if missing:
+        await interaction.response.send_message("❌ Library channel not found.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"✅ Library synced in {ch.mention}. Created: {created} • Edited: {edited}", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@movies_group.command(name="pool_message", description="Create/update a persistent pool display message in this channel")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def movies_pool_message_cmd(interaction: discord.Interaction):
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    guild_id = int(guild.id)
+    cfg = await get_movies_config(guild_id)
+    mode = cfg.get("movies_mode") or "public_manual"
+    dev_mode = (mode == "dev_library" and guild_id in DEV_GUILD_IDS)
+
+    picks = await movie_pool_fetch(guild, dev_mode=dev_mode)
+    embed = build_movie_pool_embed(guild, picks)
+    msg = await interaction.channel.send(embed=embed)
+    await movie_pool_set_display_message(guild_id, int(interaction.channel.id), int(msg.id))
+    await interaction.response.send_message("✅ Pool display message saved.", ephemeral=True)
+
+
+# ------------------------
+# /config system  (info/timezone/ping/test_all are inputs here)
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="system", description="System utilities")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2372,6 +3166,7 @@ async def config_system_cmd(
         await interaction.response.send_message(f"⏰ Current timezone: `{s['timezone']}`", ephemeral=True)
         return
 
+    # info
     s = await get_guild_extras(guild_id)
     await interaction.response.send_message(
         "Settings:\n"
@@ -2382,6 +3177,10 @@ async def config_system_cmd(
         ephemeral=True,
     )
 
+
+# ------------------------
+# /config logging
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="logging", description="Configure join/leave logging")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2427,6 +3226,98 @@ async def config_logging_cmd(
             ephemeral=True,
         )
 
+
+# ------------------------
+# /config movies
+# ------------------------
+@discord.app_commands.default_permissions(manage_guild=True)
+@config_group.command(name="movies", description="Configure Movie Night features")
+@discord.app_commands.checks.cooldown(rate=1, per=5.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def config_movies_cmd(
+    interaction: discord.Interaction,
+    mode: str | None = None,
+    per_user_limit: int | None = None,
+    pool_channel: discord.TextChannel | None = None,
+    announce_channel: discord.TextChannel | None = None,
+    announce_channel2: discord.TextChannel | None = None,
+    library_channel: discord.TextChannel | None = None,
+    sheet_csv_url: str | None = None,
+):
+    guild_id = require_guild(interaction)
+
+    used = _count_set(
+        mode=mode,
+        per_user_limit=per_user_limit,
+        pool_channel=pool_channel,
+        announce_channel=announce_channel,
+        announce_channel2=announce_channel2,
+        library_channel=library_channel,
+        sheet_csv_url=sheet_csv_url,
+    )
+    ok = await _require_one_action(
+        interaction,
+        used,
+        "Example: `/config movies mode:public_manual` • `/config movies per_user_limit:3` • `/config movies pool_channel:#movie-pool`",
+    )
+    if not ok:
+        return
+
+    action = used[0]
+    if action == "mode":
+        if mode not in ("public_manual", "dev_library"):
+            await interaction.response.send_message("❌ mode must be `public_manual` or `dev_library`.", ephemeral=True)
+            return
+        # dev_library is only allowed in DEV guild(s)
+        if mode == "dev_library" and int(guild_id) not in DEV_GUILD_IDS:
+            await interaction.response.send_message("❌ `dev_library` mode is only allowed in the developer server.", ephemeral=True)
+            return
+        await set_movies_config(guild_id, movies_mode=mode)
+        await interaction.response.send_message(f"✅ movies_mode set to `{mode}`", ephemeral=True)
+        return
+
+    if action == "per_user_limit":
+        if per_user_limit is None or per_user_limit < 1 or per_user_limit > 25:
+            await interaction.response.send_message("❌ per_user_limit must be between 1 and 25.", ephemeral=True)
+            return
+        await set_movies_config(guild_id, per_user_limit=per_user_limit)
+        await interaction.response.send_message(f"✅ per_user_limit set to `{per_user_limit}`", ephemeral=True)
+        return
+
+    if action == "pool_channel":
+        await set_movies_config(guild_id, pool_channel_id=int(pool_channel.id))
+        await interaction.response.send_message(f"✅ pool_channel set to {pool_channel.mention}", ephemeral=True)
+        return
+
+    if action == "announce_channel":
+        await set_movies_config(guild_id, announce_channel_id=int(announce_channel.id))
+        await interaction.response.send_message(f"✅ announce_channel set to {announce_channel.mention}", ephemeral=True)
+        return
+
+    if action == "announce_channel2":
+        await set_movies_config(guild_id, announce_channel2_id=int(announce_channel2.id))
+        await interaction.response.send_message(f"✅ announce_channel2 set to {announce_channel2.mention}", ephemeral=True)
+        return
+
+    if action == "library_channel":
+        if int(guild_id) not in DEV_GUILD_IDS:
+            await interaction.response.send_message("❌ library_channel is only used in the developer server.", ephemeral=True)
+            return
+        await set_movies_config(guild_id, library_channel_id=int(library_channel.id))
+        await interaction.response.send_message(f"✅ library_channel set to {library_channel.mention}", ephemeral=True)
+        return
+
+    # sheet_csv_url
+    if int(guild_id) not in DEV_GUILD_IDS:
+        await interaction.response.send_message("❌ sheet_csv_url is only used in the developer server.", ephemeral=True)
+        return
+    await set_movies_config(guild_id, sheet_csv_url=sheet_csv_url)
+    await interaction.response.send_message("✅ sheet_csv_url updated.", ephemeral=True)
+
+
+# ------------------------
+# /config active
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="active", description="Activity Tracking settings")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2501,12 +3392,16 @@ async def config_active_cmd(
         await interaction.response.send_message("Activity channels:\n" + "\n".join(mentions), ephemeral=True)
         return
 
+    # show_active
     s = await get_guild_settings(guild_id)
     await interaction.response.send_message(
         f"Mode: `{s['active_mode']}`\nThreshold: `{s['active_threshold_minutes']}` minute(s)\nActive role ID: `{s['active_role_id']}`",
         ephemeral=True,
     )
 
+# ------------------------
+# /config qotd
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="qotd", description="Configure QOTD")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2527,6 +3422,7 @@ async def config_qotd_cmd(
         return
     action = used[0]
 
+    # QOTD does not have a DB enabled flag; emulate enable/disable by requiring channel+source to run.
     if action == "enable":
         if enable:
             s = await get_guild_extras(guild_id)
@@ -2555,6 +3451,7 @@ async def config_qotd_cmd(
         await interaction.response.send_message("✅ QOTD source updated.", ephemeral=True)
         return
 
+    # post_now
     s = await get_guild_extras(guild_id)
     if not s.get("qotd_channel_id") or not s.get("qotd_source_url"):
         return await interaction.response.send_message("❌ Set qotd channel + source first.", ephemeral=True)
@@ -2586,6 +3483,9 @@ async def config_qotd_cmd(
     except Exception:
         await interaction.response.send_message("❌ Failed to post QOTD (check source URL).", ephemeral=True)
 
+# ------------------------
+# /config autodelete
+# ------------------------
 @discord.app_commands.default_permissions(manage_channels=True)
 @config_group.command(name="autodelete", description="Auto-delete configuration")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2648,6 +3548,9 @@ async def config_autodelete_cmd(
         await interaction.response.send_message(txt, ephemeral=True)
         return
 
+# ------------------------
+# /config birthday  (admin)
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="birthday", description="Configure birthday system")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2747,9 +3650,13 @@ async def config_birthday_cmd(
         await interaction.response.send_message(f"✅ Birthday list published in {publish_list.mention}", ephemeral=True)
         return
 
+    # announce
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message("✅ Birthday list updated (daily announce loop will handle announcements).", ephemeral=True)
 
+# ------------------------
+# /config deadchat
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="deadchat", description="Configure Dead Chat")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2821,6 +3728,9 @@ async def config_deadchat_cmd(
     await set_deadchat_requires_active(guild_id, bool(require_active.value))
     await interaction.response.send_message(f"✅ Require Active set to `{bool(require_active.value)}`", ephemeral=True)
 
+# ------------------------
+# /config plague
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="plague", description="Configure Plague Day")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2842,6 +3752,7 @@ async def config_plague_cmd(
         await interaction.response.send_message(f"✅ Plague role set to {set_role.mention}", ephemeral=True)
         return
 
+    # enable
     if enable:
         s = await get_guild_settings(guild_id)
         missing = []
@@ -2854,6 +3765,9 @@ async def config_plague_cmd(
     await plague_set_enabled(guild_id, bool(enable))
     await interaction.response.send_message(f"✅ Plague enabled set to `{bool(enable)}`", ephemeral=True)
 
+# ------------------------
+# /schedule plague
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @schedule_group.command(name="plague", description="Schedule a Plague Day (YYYY-MM-DD)")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2871,6 +3785,9 @@ async def schedule_plague_cmd(interaction: discord.Interaction, day: str):
 
     await interaction.response.send_message(f"✅ Plague Day scheduled for `{d.isoformat()}` (triggers after 12:00 UTC).", ephemeral=True)
 
+# ------------------------
+# /config prize
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="prize", description="Configure prizes")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2935,6 +3852,9 @@ async def config_prize_cmd(
     await prize_delete_definition(guild_id, pid)
     await interaction.response.send_message("✅ Prize deleted.", ephemeral=True)
 
+# ------------------------
+# /schedule prize
+# ------------------------
 @schedule_group.command(name="prize", description="Prize schedule actions")
 @discord.app_commands.autocomplete(select_prize=prize_autocomplete, cancel_prize=schedule_autocomplete)
 @discord.app_commands.choices(not_before=PRIZE_TIME_CHOICES)
@@ -2994,6 +3914,7 @@ async def schedule_prize_cmd(
             ephemeral=True,
         )
 
+    # select_prize
     if set_month is None or set_day is None:
         return await interaction.response.send_message("❌ For `select_prize`, you must also provide `set_month` and `set_day`.", ephemeral=True)
     if channel is None:
@@ -3016,6 +3937,9 @@ async def schedule_prize_cmd(
     sid = await prize_schedule_add(guild_id, d, t, int(channel.id), pid)
     await interaction.response.send_message(f"✅ Scheduled.\nSchedule ID: `{sid}`", ephemeral=True)
 
+# ------------------------
+# /config vc_link_roles  (voice role links)
+# ------------------------
 @discord.app_commands.default_permissions(manage_roles=True)
 @config_group.command(name="vc_link_roles", description="Configure voice role links")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -3061,6 +3985,9 @@ async def config_vc_link_roles_cmd(
     await voice_role_set_link(guild_id, int(voice_channel.id), int(role.id), mode.value)
     await interaction.response.send_message(f"✅ Linked {voice_channel.mention} ↔ {role.mention} ({mode.value})", ephemeral=True)
 
+# ------------------------
+# /config join_roles
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="join_roles", description="Configure join roles")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -3103,9 +4030,13 @@ async def config_join_roles_cmd(
         await interaction.response.send_message("✅ To disable bot role, clear it in DB (not implemented as a single action here).", ephemeral=True)
         return
 
+    # set_bot_role
     await welcome_set(guild_id, None, None, None, None, int(set_bot_role.id), None)
     await interaction.response.send_message("✅ Bot join role updated.", ephemeral=True)
 
+# ------------------------
+# /messages welcome
+# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @messages_group.command(name="welcome", description="Configure welcome messages")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -3127,6 +4058,9 @@ async def messages_welcome_cmd(
     await welcome_set_message(guild_id, set_custom_welcome)
     await interaction.response.send_message("✅ Welcome message updated.", ephemeral=True)
 
+# ------------------------
+# /messages sticky
+# ------------------------
 @discord.app_commands.default_permissions(manage_channels=True)
 @messages_group.command(name="sticky", description="Sticky message")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -3156,15 +4090,21 @@ async def messages_sticky_cmd(
     await sticky_clear(guild_id, int(channel.id))
     await interaction.response.send_message(f"✅ Sticky cleared for {channel.mention}", ephemeral=True)
 
+# Register groups
 bot.tree.add_command(config_group)
 bot.tree.add_command(messages_group)
 bot.tree.add_command(schedule_group)
+bot.tree.add_command(movies_group)
 
 ############### ON_READY & BOT START ###############
 @bot.event
 async def on_ready():
     global active_cleanup_task, plague_cleanup_task, deadchat_cleanup_task, birthday_task, qotd_task
     await bot.tree.sync()
+    try:
+        await register_movie_library_views(bot)
+    except Exception:
+        pass
     if active_cleanup_task is None:
         active_cleanup_task = asyncio.create_task(active_cleanup_loop(bot))
     if plague_cleanup_task is None:
