@@ -2709,199 +2709,267 @@ async def status_activity(interaction: discord.Interaction, user: discord.Member
     await interaction.response.send_message(f"{member.mention} last message at: `{val}`", ephemeral=True)
 
 
-############### NEW COMMAND GROUPS (BIRTHDAY / QOTD / STICKY / AUTODELETE / VOICE / WELCOME) ###############
-birthday_group = discord.app_commands.Group(name="birthday", description="Birthday system")
-birthday_config_group = discord.app_commands.Group(name="config", description="Birthday configuration", parent=birthday_group)
+############### NEW COMMAND GROUPS (BIRTHDAY / QOTD / STICKY / AUTODELETE / VOICE / WELCOME / LOGGING) ###############
 
-# ----- USER COMMANDS -----
+# =========================
+# /birthday ...
+# =========================
+birthday_group = discord.app_commands.Group(name="birthday", description="Birthday system")
 
 @birthday_group.command(name="set", description="Set your birthday (MM/DD or MM/DD/YYYY)")
+@discord.app_commands.describe(month="1-12", day="1-31", year="Optional year")
 async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: int, year: int | None = None):
     guild_id = require_guild(interaction)
     await birthday_set(guild_id, int(interaction.user.id), month, day, year, int(interaction.user.id))
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message(f"✅ Birthday saved: {month:02d}/{day:02d}", ephemeral=True)
 
-# ----- ADMIN / CONFIG COMMANDS -----
-
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_config_group.command(name="enable", description="Enable birthday announcements")
+@birthday_group.command(name="config", description="Configure birthday system")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_enable_cmd(interaction: discord.Interaction):
+@discord.app_commands.describe(
+    enabled="Enable/disable birthday announcements",
+    set_for="Set birthday for a member (admin)",
+    set_for_month="Month for set_for (1-12)",
+    set_for_day="Day for set_for (1-31)",
+    set_for_year="Optional year for set_for",
+    remove="Remove a member's birthday (admin)",
+    set_role="Birthday role (required for enabled)",
+    set_channel="Announcement channel (required for enabled)",
+    set_custom_message="Message template. Use {user} and {name}",
+    publish_list_channel="Channel to publish/update the birthday list embed",
+    announce="If true, update the published list now (and attempt announcements if scheduled)",
+)
+async def birthday_config_cmd(
+    interaction: discord.Interaction,
+    enabled: bool | None = None,
+    set_for: discord.Member | None = None,
+    set_for_month: int | None = None,
+    set_for_day: int | None = None,
+    set_for_year: int | None = None,
+    remove: discord.Member | None = None,
+    set_role: discord.Role | None = None,
+    set_channel: discord.TextChannel | None = None,
+    set_custom_message: str | None = None,
+    publish_list_channel: discord.TextChannel | None = None,
+    announce: bool | None = None,
+):
     guild_id = require_guild(interaction)
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT birthday_role_id, birthday_channel_id FROM guild_settings WHERE guild_id=$1;",
-            int(guild_id),
-        )
-    missing = []
-    if not row or not row.get("birthday_role_id"):
-        missing.append("birthday role")
-    if not row or not row.get("birthday_channel_id"):
-        missing.append("birthday channel")
-    if missing:
-        return await interaction.response.send_message(
-            f"❌ Missing required settings: {', '.join(missing)}",
+
+    # Determine which single "action" the user is trying to do.
+    actions = {
+        "enabled": enabled,
+        "set_for": set_for,
+        "remove": remove,
+        "set_role": set_role,
+        "set_channel": set_channel,
+        "set_custom_message": set_custom_message,
+        "publish_list": publish_list_channel,
+        "announce": announce,
+    }
+    used = {k: v for k, v in actions.items() if v is not None}
+
+    if len(used) != 1:
+        await interaction.response.send_message(
+            "❌ Please provide **exactly one** option in `/birthday config` (example: `enabled: true`).",
             ephemeral=True,
         )
-    await birthday_set_enabled(guild_id, True)
-    await interaction.response.send_message("✅ Birthday announcements enabled.", ephemeral=True)
+        return
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@birthday_config_group.command(name="disable", description="Disable birthday announcements")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_disable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await birthday_set_enabled(guild_id, False)
-    await interaction.response.send_message("🚫 Birthday announcements disabled.", ephemeral=True)
+    action, value = next(iter(used.items()))
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@birthday_config_group.command(name="set_for", description="Admin: set another member's birthday")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_set_for_cmd(interaction: discord.Interaction, member: discord.Member, month: int, day: int, year: int | None = None):
-    guild_id = require_guild(interaction)
-    await birthday_set(guild_id, int(member.id), month, day, year, int(interaction.user.id))
-    await update_birthday_list_message(bot, guild_id)
-    await interaction.response.send_message(f"✅ Birthday saved for {member.mention}: {month:02d}/{day:02d}", ephemeral=True)
+    if action == "enabled":
+        if bool(value):
+            # Validate required prerequisites
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT birthday_role_id, birthday_channel_id FROM guild_settings WHERE guild_id=$1;",
+                    int(guild_id),
+                )
+            missing = []
+            if not row or not row.get("birthday_role_id"):
+                missing.append("birthday role (`/birthday config set_role:`)")
+            if not row or not row.get("birthday_channel_id"):
+                missing.append("birthday channel (`/birthday config set_channel:`)")
+            if missing:
+                await interaction.response.send_message(
+                    "❌ Can't enable yet. Missing: " + ", ".join(missing),
+                    ephemeral=True,
+                )
+                return
+        await birthday_set_enabled(guild_id, bool(value))
+        await interaction.response.send_message(f"✅ Birthday enabled set to `{bool(value)}`.", ephemeral=True)
+        return
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@birthday_config_group.command(name="remove", description="Admin: remove a member's birthday")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_remove_cmd(interaction: discord.Interaction, member: discord.Member):
-    guild_id = require_guild(interaction)
-    await birthday_remove(guild_id, int(member.id))
-    await update_birthday_list_message(bot, guild_id)
-    await interaction.response.send_message(f"✅ Removed birthday for {member.mention}", ephemeral=True)
+    if action == "set_for":
+        if set_for_month is None or set_for_day is None:
+            await interaction.response.send_message("❌ For `set_for:` you must also provide `set_for_month:` and `set_for_day:`.", ephemeral=True)
+            return
+        await birthday_set(guild_id, int(set_for.id), int(set_for_month), int(set_for_day), set_for_year, int(interaction.user.id))
+        await update_birthday_list_message(bot, guild_id)
+        await interaction.response.send_message(
+            f"✅ Birthday saved for {set_for.mention}: {int(set_for_month):02d}/{int(set_for_day):02d}",
+            ephemeral=True,
+        )
+        return
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@birthday_config_group.command(name="set_role", description="Set the birthday role")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
-    guild_id = require_guild(interaction)
-    await birthday_set_role_channel_message(guild_id, int(role.id), None, None)
-    await interaction.response.send_message(f"✅ Birthday role set to {role.mention}", ephemeral=True)
+    if action == "remove":
+        await birthday_remove(guild_id, int(remove.id))
+        await update_birthday_list_message(bot, guild_id)
+        await interaction.response.send_message(f"✅ Removed birthday for {remove.mention}.", ephemeral=True)
+        return
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@birthday_config_group.command(name="set_channel", description="Set the birthday announcement channel")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
-    guild_id = require_guild(interaction)
-    await birthday_set_role_channel_message(guild_id, None, int(channel.id), None)
-    await interaction.response.send_message(f"✅ Birthday channel set to {channel.mention}", ephemeral=True)
+    if action == "set_role":
+        await birthday_set_role_channel_message(guild_id, int(set_role.id), None, None)
+        await interaction.response.send_message(f"✅ Birthday role set to {set_role.mention}.", ephemeral=True)
+        return
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@birthday_config_group.command(name="set_custom_message", description="Set the birthday message template (use {user})")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_set_message_cmd(interaction: discord.Interaction, text: str):
-    guild_id = require_guild(interaction)
-    await birthday_set_role_channel_message(guild_id, None, None, text)
-    await interaction.response.send_message("✅ Birthday message updated", ephemeral=True)
+    if action == "set_channel":
+        await birthday_set_role_channel_message(guild_id, None, int(set_channel.id), None)
+        await interaction.response.send_message(f"✅ Birthday channel set to {set_channel.mention}.", ephemeral=True)
+        return
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@birthday_config_group.command(name="publish_list", description="Create or update a public birthday list message")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_publish_list_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
-    guild_id = require_guild(interaction)
-    embed = discord.Embed(title="🎂 Birthdays", description="(initializing...)")
-    msg = await channel.send(embed=embed)
-    await birthday_set_list_message(guild_id, int(channel.id), int(msg.id))
-    await update_birthday_list_message(bot, guild_id)
-    await interaction.response.send_message(f"✅ Birthday list published in {channel.mention}", ephemeral=True)
+    if action == "set_custom_message":
+        await birthday_set_role_channel_message(guild_id, None, None, str(set_custom_message))
+        await interaction.response.send_message("✅ Birthday message updated.", ephemeral=True)
+        return
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@birthday_config_group.command(name="announce", description="Admin: manually announce birthdays for today")
-@discord.app_commands.checks.cooldown(rate=1, per=30.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_manual_announce_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await interaction.response.send_message("✅ Attempting birthday announcements now.", ephemeral=True)
-    await update_birthday_list_message(bot, guild_id)
+    if action == "publish_list":
+        embed = discord.Embed(title="🎂 Birthdays", description="(initializing...)")
+        msg = await publish_list_channel.send(embed=embed)
+        await birthday_set_list_message(guild_id, int(publish_list_channel.id), int(msg.id))
+        await update_birthday_list_message(bot, guild_id)
+        await interaction.response.send_message(f"✅ Birthday list published in {publish_list_channel.mention}.", ephemeral=True)
+        return
 
-# ---- QOTD ----
+    if action == "announce":
+        if bool(announce):
+            await update_birthday_list_message(bot, guild_id)
+        await interaction.response.send_message("✅ Done.", ephemeral=True)
+        return
 
+
+# =========================
+# /qotd ...
+# =========================
 qotd_group = discord.app_commands.Group(name="qotd", description="Question of the Day")
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="set_channel", description="Set the QOTD channel")
+@qotd_group.command(name="config", description="Configure QOTD")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+@discord.app_commands.describe(
+    enabled="Enable/disable QOTD posting",
+    set_channel="Channel for QOTD posts",
+    set_role="Optional role to ping",
+    set_source="Source URL (one question per line, or CSV first column)",
+    set_prefix="Prefix line shown before the question",
+    post_now="If true, post a QOTD right now",
+)
+async def qotd_config_cmd(
+    interaction: discord.Interaction,
+    enabled: bool | None = None,
+    set_channel: discord.TextChannel | None = None,
+    set_role: discord.Role | None = None,
+    set_source: str | None = None,
+    set_prefix: str | None = None,
+    post_now: bool | None = None,
+):
     guild_id = require_guild(interaction)
-    await qotd_set(guild_id, int(channel.id), None, None, None)
-    await interaction.response.send_message(f"✅ QOTD channel set to {channel.mention}", ephemeral=True)
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="set_role", description="Set optional role ping for QOTD")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_set_role_cmd(interaction: discord.Interaction, role: discord.Role | None = None):
-    guild_id = require_guild(interaction)
-    await qotd_set(guild_id, None, int(role.id) if role else None, None, None)
-    await interaction.response.send_message("✅ QOTD role updated", ephemeral=True)
+    actions = {
+        "enabled": enabled,
+        "set_channel": set_channel,
+        "set_role": set_role,
+        "set_source": set_source,
+        "set_prefix": set_prefix,
+        "post_now": post_now,
+    }
+    used = {k: v for k, v in actions.items() if v is not None}
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="set_source", description="Set the QOTD source URL")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_set_source_cmd(interaction: discord.Interaction, url: str):
-    guild_id = require_guild(interaction)
-    await qotd_set(guild_id, None, None, None, url)
-    await interaction.response.send_message("✅ QOTD source updated", ephemeral=True)
+    if len(used) != 1:
+        await interaction.response.send_message("❌ Provide exactly one option in `/qotd config`.", ephemeral=True)
+        return
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="set_prefix", description="Set the QOTD prefix line")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_set_prefix_cmd(interaction: discord.Interaction, text: str):
-    guild_id = require_guild(interaction)
-    await qotd_set(guild_id, None, None, text, None)
-    await interaction.response.send_message("✅ QOTD prefix updated", ephemeral=True)
+    action, value = next(iter(used.items()))
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="post_now", description="Admin: post QOTD now")
-@discord.app_commands.checks.cooldown(rate=1, per=60.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_post_now_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    s = await get_guild_extras(guild_id)
-    if not s.get("qotd_channel_id") or not s.get("qotd_source_url"):
-        return await interaction.response.send_message("❌ Set qotd channel + source first.", ephemeral=True)
-    guild = interaction.guild
-    channel = guild.get_channel(int(s["qotd_channel_id"]))
-    if not channel:
-        return await interaction.response.send_message("❌ QOTD channel not found.", ephemeral=True)
-    try:
-        questions = await fetch_questions_from_source(s["qotd_source_url"])
-        recent = await qotd_recent_hashes(guild_id, limit=300)
-        pick = None
-        for q in questions:
-            if _hash_question(q) not in recent:
-                pick=q; break
-        if pick is None:
-            pick = questions[0] if questions else None
-        if not pick:
-            return await interaction.response.send_message("❌ No questions found at source.", ephemeral=True)
-        role_ping = ""
-        if s.get("qotd_role_id"):
-            role = guild.get_role(int(s["qotd_role_id"]))
-            if role:
-                role_ping = role.mention + " "
-        prefix = s.get("qotd_message_prefix") or "❓ **Question of the Day**"
-        await channel.send(f"{role_ping}{prefix}\n{pick}")
-        await qotd_record_post(guild_id, guild_now(s.get("timezone") or "America/Los_Angeles").date(), pick)
-        await interaction.response.send_message("✅ Posted QOTD.", ephemeral=True)
-    except Exception:
-        await interaction.response.send_message("❌ Failed to post QOTD (check source URL).", ephemeral=True)
+    if action == "enabled":
+        if bool(value):
+            s = await get_guild_extras(guild_id)
+            if not s.get("qotd_channel_id") or not s.get("qotd_source_url"):
+                await interaction.response.send_message("❌ Set `set_channel:` and `set_source:` first.", ephemeral=True)
+                return
+        await qotd_set_enabled(guild_id, bool(value))
+        await interaction.response.send_message(f"✅ QOTD enabled set to `{bool(value)}`.", ephemeral=True)
+        return
 
-# ---- Sticky ----
+    if action == "set_channel":
+        await qotd_set(guild_id, int(set_channel.id), None, None, None)
+        await interaction.response.send_message(f"✅ QOTD channel set to {set_channel.mention}.", ephemeral=True)
+        return
+
+    if action == "set_role":
+        await qotd_set(guild_id, None, int(set_role.id) if set_role else None, None, None)
+        await interaction.response.send_message("✅ QOTD role updated.", ephemeral=True)
+        return
+
+    if action == "set_source":
+        await qotd_set(guild_id, None, None, None, str(set_source))
+        await interaction.response.send_message("✅ QOTD source updated.", ephemeral=True)
+        return
+
+    if action == "set_prefix":
+        await qotd_set(guild_id, None, None, str(set_prefix), None)
+        await interaction.response.send_message("✅ QOTD prefix updated.", ephemeral=True)
+        return
+
+    if action == "post_now":
+        if not bool(post_now):
+            await interaction.response.send_message("✅ Done.", ephemeral=True)
+            return
+        s = await get_guild_extras(guild_id)
+        if not s.get("qotd_channel_id") or not s.get("qotd_source_url"):
+            await interaction.response.send_message("❌ Set `set_channel:` and `set_source:` first.", ephemeral=True)
+            return
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Use this in a server.", ephemeral=True)
+            return
+        channel = guild.get_channel(int(s["qotd_channel_id"]))
+        if not channel:
+            await interaction.response.send_message("❌ QOTD channel not found.", ephemeral=True)
+            return
+        try:
+            questions = await fetch_questions_from_source(s["qotd_source_url"])
+            recent = await qotd_recent_hashes(guild_id, limit=300)
+            pick = None
+            for q in questions:
+                if _hash_question(q) not in recent:
+                    pick = q
+                    break
+            if pick is None:
+                pick = questions[0] if questions else None
+            if not pick:
+                await interaction.response.send_message("❌ No questions found at source.", ephemeral=True)
+                return
+            role_ping = ""
+            if s.get("qotd_role_id"):
+                role = guild.get_role(int(s["qotd_role_id"]))
+                if role:
+                    role_ping = role.mention + " "
+            prefix = s.get("qotd_message_prefix") or "❓ **Question of the Day**"
+            await channel.send(f"{role_ping}{prefix}\n{pick}")
+            await qotd_record_post(guild_id, guild_now(s.get('timezone') or 'America/Los_Angeles').date(), pick)
+            await interaction.response.send_message("✅ Posted QOTD.", ephemeral=True)
+        except Exception:
+            await interaction.response.send_message("❌ Failed to post QOTD (check source URL).", ephemeral=True)
+        return
+
+
+# =========================
+# /sticky ...
+# =========================
 sticky_group = discord.app_commands.Group(name="sticky", description="Sticky messages")
 
 @discord.app_commands.default_permissions(manage_channels=True)
@@ -2922,50 +2990,100 @@ async def sticky_clear_cmd(interaction: discord.Interaction, channel: discord.Te
     await sticky_clear(guild_id, int(channel.id))
     await interaction.response.send_message(f"✅ Sticky cleared for {channel.mention}", ephemeral=True)
 
-# ---- Auto-delete ----
+
+# =========================
+# /autodelete ...
+# =========================
 autodelete_group = discord.app_commands.Group(name="autodelete", description="Auto-delete system")
 
-@discord.app_commands.default_permissions(manage_channels=True)
-@autodelete_group.command(name="add_channel", description="Enable auto-delete in a channel")
+@discord.app_commands.default_permissions(manage_guild=True)
+@autodelete_group.command(name="config", description="Configure auto-delete")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_channels=True)
-async def autodelete_add_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel, minutes: int, log_channel: discord.TextChannel | None = None):
-    guild_id = require_guild(interaction)
-    await autodelete_set_channel(guild_id, int(channel.id), int(minutes)*60, int(log_channel.id) if log_channel else None)
-    await interaction.response.send_message(f"✅ Auto-delete enabled in {channel.mention} after {minutes} minute(s).", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_channels=True)
-@autodelete_group.command(name="remove_channel", description="Disable auto-delete in a channel")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_channels=True)
-async def autodelete_remove_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
-    guild_id = require_guild(interaction)
-    await autodelete_remove_channel(guild_id, int(channel.id))
-    await interaction.response.send_message(f"✅ Auto-delete disabled in {channel.mention}.", ephemeral=True)
-
-@autodelete_group.command(name="ignore_add", description="Add an ignore phrase (messages containing it won't be deleted)")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
-async def autodelete_ignore_add_cmd(interaction: discord.Interaction, phrase: str):
+@discord.app_commands.describe(
+    enabled="Enable/disable auto-delete system",
+    add_channel="Add/enable auto-delete for a channel",
+    add_minutes="Delete-after minutes for add_channel (optional)",
+    add_log_channel="Optional log channel for deletes",
+    remove_channel="Remove/disable auto-delete for a channel",
+    default_minutes="Default delete-after minutes for new channels",
+    ignore_add="Add an ignore phrase",
+    ignore_remove="Remove an ignore phrase",
+    ignore_list="If true, list ignore phrases",
+)
+async def autodelete_config_cmd(
+    interaction: discord.Interaction,
+    enabled: bool | None = None,
+    add_channel: discord.TextChannel | None = None,
+    add_minutes: int | None = None,
+    add_log_channel: discord.TextChannel | None = None,
+    remove_channel: discord.TextChannel | None = None,
+    default_minutes: int | None = None,
+    ignore_add: str | None = None,
+    ignore_remove: str | None = None,
+    ignore_list: bool | None = None,
+):
     guild_id = require_guild(interaction)
-    await autodelete_add_ignore_phrase(guild_id, phrase)
-    await interaction.response.send_message("✅ Ignore phrase added.", ephemeral=True)
+    actions = {
+        "enabled": enabled,
+        "add_channel": add_channel,
+        "remove_channel": remove_channel,
+        "default_minutes": default_minutes,
+        "ignore_add": ignore_add,
+        "ignore_remove": ignore_remove,
+        "ignore_list": ignore_list,
+    }
+    used = {k: v for k, v in actions.items() if v is not None}
+    if len(used) != 1:
+        await interaction.response.send_message("❌ Provide exactly one option in `/autodelete config`.", ephemeral=True)
+        return
+    action, value = next(iter(used.items()))
 
-@autodelete_group.command(name="ignore_remove", description="Remove an ignore phrase")
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def autodelete_ignore_remove_cmd(interaction: discord.Interaction, phrase: str):
-    guild_id = require_guild(interaction)
-    await autodelete_remove_ignore_phrase(guild_id, phrase)
-    await interaction.response.send_message("✅ Ignore phrase removed.", ephemeral=True)
+    if action == "enabled":
+        await autodelete_set_enabled(guild_id, bool(value))
+        await interaction.response.send_message(f"✅ Auto-delete enabled set to `{bool(value)}`.", ephemeral=True)
+        return
 
-@autodelete_group.command(name="ignore_list", description="List ignore phrases")
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def autodelete_ignore_list_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    phrases = await autodelete_list_ignore_phrases(guild_id)
-    txt = "\n".join(f"- {p}" for p in phrases) if phrases else "(none)"
-    await interaction.response.send_message(txt, ephemeral=True)
+    if action == "add_channel":
+        settings = await get_guild_settings(guild_id)
+        seconds = int(add_minutes) * 60 if add_minutes is not None else int(settings.get("autodelete_default_seconds", 3600))
+        await autodelete_set_channel(guild_id, int(add_channel.id), seconds, int(add_log_channel.id) if add_log_channel else None)
+        await interaction.response.send_message(f"✅ Added {add_channel.mention} (delete after {seconds}s).", ephemeral=True)
+        return
 
-# ---- Voice roles ----
+    if action == "remove_channel":
+        await autodelete_remove_channel(guild_id, int(remove_channel.id))
+        await interaction.response.send_message(f"✅ Removed {remove_channel.mention} from auto-delete.", ephemeral=True)
+        return
+
+    if action == "default_minutes":
+        await autodelete_set_default_seconds(guild_id, int(default_minutes) * 60)
+        await interaction.response.send_message(f"✅ Default delete-after set to `{int(default_minutes)}` minutes.", ephemeral=True)
+        return
+
+    if action == "ignore_add":
+        await autodelete_add_ignore_phrase(guild_id, str(ignore_add))
+        await interaction.response.send_message("✅ Ignore phrase added.", ephemeral=True)
+        return
+
+    if action == "ignore_remove":
+        await autodelete_remove_ignore_phrase(guild_id, str(ignore_remove))
+        await interaction.response.send_message("✅ Ignore phrase removed.", ephemeral=True)
+        return
+
+    if action == "ignore_list":
+        if not bool(ignore_list):
+            await interaction.response.send_message("✅ Done.", ephemeral=True)
+            return
+        phrases = await autodelete_list_ignore_phrases(guild_id)
+        txt = "\n".join(f"- {p}" for p in phrases) if phrases else "(none)"
+        await interaction.response.send_message(txt, ephemeral=True)
+        return
+
+
+# =========================
+# /voice ...
+# =========================
 voice_group = discord.app_commands.Group(name="voice", description="Voice channel role links")
 
 VOICE_MODE_CHOICES = [
@@ -3006,399 +3124,98 @@ async def voice_list_cmd(interaction: discord.Interaction):
         lines.append(f"- {(vc.mention if vc else l['voice_channel_id'])} → {(role.mention if role else l['role_id'])} (`{l['mode']}`)")
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-# ---- Welcome / Modlog ----
 
-# ---- Logging ----
+# =========================
+# /logging ...
+# =========================
 logging_group = discord.app_commands.Group(name="logging", description="Member join/leave logging")
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@logging_group.command(name="set_channel", description="Set the logging channel")
+@logging_group.command(name="config", description="Configure logging")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
-async def logging_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+@discord.app_commands.describe(
+    enabled="Enable/disable logging",
+    set_channel="Set the logging channel",
+)
+async def logging_config_cmd(
+    interaction: discord.Interaction,
+    enabled: bool | None = None,
+    set_channel: discord.TextChannel | None = None,
+):
     guild_id = require_guild(interaction)
-    await set_modlog_channel(guild_id, int(channel.id))
-    await interaction.response.send_message(f"✅ Logging channel set to {channel.mention}", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@logging_group.command(name="enable", description="Enable member join/leave logging")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def logging_enable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    s = await get_guild_extras(guild_id)
-    if not s.get("modlog_channel_id"):
-        return await interaction.response.send_message("❌ Set the logging channel first with `/logging set_channel`.", ephemeral=True)
-    await set_logging_enabled(guild_id, True)
-    await interaction.response.send_message("✅ Logging enabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@logging_group.command(name="disable", description="Disable member join/leave logging")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def logging_disable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await set_logging_enabled(guild_id, False)
-    await interaction.response.send_message("🚫 Logging disabled.", ephemeral=True)
-
-
-# ---- Welcome ----
-welcome_cfg_group = discord.app_commands.Group(name="welcome", description="Welcome messages")
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@welcome_cfg_group.command(name="enable", description="Enable welcome messages")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def welcome_enable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await welcome_set_enabled(guild_id, True)
-    await interaction.response.send_message("✅ Welcome messages enabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@welcome_cfg_group.command(name="disable", description="Disable welcome messages")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def welcome_disable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await welcome_set_enabled(guild_id, False)
-    await interaction.response.send_message("🚫 Welcome messages disabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@welcome_cfg_group.command(name="set_custom_welcome", description="Set the welcome message template (use {user})")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def welcome_set_custom_cmd(interaction: discord.Interaction, text: str):
-    guild_id = require_guild(interaction)
-    await welcome_set_message(guild_id, text)
-    await interaction.response.send_message("✅ Welcome message updated.", ephemeral=True)
-
-welcome_group = discord.app_commands.Group(name="server", description="Welcome + member/bot management")
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@welcome_group.command(name="set_welcome", description="Set welcome channel + message")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def server_set_welcome_cmd(interaction: discord.Interaction, channel: discord.TextChannel, text: str):
-    guild_id = require_guild(interaction)
-    await welcome_set(guild_id, int(channel.id), text, None, None, None, None)
-    await interaction.response.send_message("✅ Welcome settings updated.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_roles=True)
-@welcome_group.command(name="set_member_role", description="Set delayed member role")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_roles=True)
-async def server_set_member_role_cmd(interaction: discord.Interaction, role: discord.Role, delay_seconds: int = 0):
-    guild_id = require_guild(interaction)
-    await welcome_set(guild_id, None, None, int(role.id), int(delay_seconds), None, None)
-    await interaction.response.send_message("✅ Member role settings updated.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_roles=True)
-@welcome_group.command(name="set_bot_role", description="Set auto role for new bots")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_roles=True)
-async def server_set_bot_role_cmd(interaction: discord.Interaction, role: discord.Role):
-    guild_id = require_guild(interaction)
-    await welcome_set(guild_id, None, None, None, None, int(role.id), None)
-    await interaction.response.send_message("✅ Bot role updated.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@welcome_group.command(name="set_modlog", description="Set member activity log channel")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def server_set_modlog_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
-    guild_id = require_guild(interaction)
-    await welcome_set(guild_id, None, None, None, None, None, int(channel.id))
-    await interaction.response.send_message("✅ Modlog channel updated.", ephemeral=True)
-
-
-
-# ================= Desired command UX additions =================
-
-# QOTD enable/disable (keeps existing /qotd tools intact)
-@discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="enable", description="Enable QOTD posting (uses saved channel/role/source)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_enable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    s = await get_guild_extras(guild_id)
-    if not s.get("qotd_channel_id") or not s.get("qotd_source_url"):
-        await interaction.response.send_message("❌ Set `/qotd set_channel` and `/qotd set_source` first.", ephemeral=True)
+    actions = {"enabled": enabled, "set_channel": set_channel}
+    used = {k: v for k, v in actions.items() if v is not None}
+    if len(used) != 1:
+        await interaction.response.send_message("❌ Provide exactly one option in `/logging config`.", ephemeral=True)
         return
-    await qotd_set_enabled(guild_id, True)
-    await interaction.response.send_message("✅ QOTD enabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="disable", description="Disable QOTD posting (keeps saved settings)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_disable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await qotd_set_enabled(guild_id, False)
-    await interaction.response.send_message("✅ QOTD disabled.", ephemeral=True)
-
-# Auto-delete enable/disable + aliases
-@discord.app_commands.default_permissions(manage_guild=True)
-@autodelete_group.command(name="enable", description="Enable auto-delete (uses saved channels/settings)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def autodelete_enable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await autodelete_set_enabled(guild_id, True)
-    await interaction.response.send_message("✅ Auto-delete enabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@autodelete_group.command(name="disable", description="Disable auto-delete (keeps saved channels/settings)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def autodelete_disable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await autodelete_set_enabled(guild_id, False)
-    await interaction.response.send_message("✅ Auto-delete disabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@autodelete_group.command(name="add_channels", description="Add a channel to auto-delete (alias of add_channel)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def autodelete_add_channels_cmd(interaction: discord.Interaction, channel: discord.TextChannel, minutes: int | None = None):
-    guild_id = require_guild(interaction)
-    settings = await get_guild_settings(guild_id)
-    seconds = int(minutes * 60) if minutes is not None else int(settings.get("autodelete_default_seconds", 3600))
-    await autodelete_add_channel(guild_id, int(channel.id), seconds)
-    await interaction.response.send_message(f"✅ Added {channel.mention} with delete-after `{seconds}` seconds.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@autodelete_group.command(name="filter_minutes", description="Set the default delete-after minutes for new channels")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def autodelete_filter_minutes_cmd(interaction: discord.Interaction, minutes: int):
-    guild_id = require_guild(interaction)
-    await autodelete_set_default_seconds(guild_id, int(minutes) * 60)
-    await interaction.response.send_message(f"✅ Default auto-delete set to `{minutes}` minutes.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@autodelete_group.command(name="filter_ignore_words", description="Add an ignore phrase/word (alias of ignore_add)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def autodelete_filter_ignore_words_cmd(interaction: discord.Interaction, phrase: str):
-    guild_id = require_guild(interaction)
-    await autodelete_add_ignore_phrase(guild_id, phrase)
-    await interaction.response.send_message("✅ Ignore phrase added.", ephemeral=True)
-
-# Deadchat enable/disable (keeps channels/role saved)
-@discord.app_commands.default_permissions(manage_guild=True)
-@deadchat_group.command(name="enable", description="Enable Dead Chat (uses saved channels/settings)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def deadchat_enable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await deadchat_set_enabled(guild_id, True)
-    await interaction.response.send_message("✅ Dead Chat enabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@deadchat_group.command(name="disable", description="Disable Dead Chat (keeps saved channels/settings)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def deadchat_disable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await deadchat_set_enabled(guild_id, False)
-    await interaction.response.send_message("✅ Dead Chat disabled.", ephemeral=True)
-
-# /join roles ... (subgroup UX)
-join_group = discord.app_commands.Group(name="join", description="Join automation")
-join_roles_group = discord.app_commands.Group(name="roles", description="Join roles", parent=join_group)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@join_roles_group.command(name="enable", description="Enable member join roles")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def join_roles_enable_members_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await join_roles_set_member_enabled(guild_id, True)
-    await interaction.response.send_message("✅ Member join roles enabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@join_roles_group.command(name="disable_member", description="Disable member join roles")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def join_roles_disable_members_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await join_roles_set_member_enabled(guild_id, False)
-    await interaction.response.send_message("✅ Member join roles disabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@join_roles_group.command(name="set_member_role", description="Set the role given to new members")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def join_roles_set_member_role_cmd(interaction: discord.Interaction, role: discord.Role):
-    guild_id = require_guild(interaction)
-    s = await get_guild_extras(guild_id)
-    await welcome_set(guild_id, None, None, int(role.id), s.get("member_role_delay_seconds") or 0, None, None)
-    await interaction.response.send_message(f"✅ Member join role set to {role.mention}.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@join_roles_group.command(name="set_timer", description="Set delay (seconds) before giving the member join role")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def join_roles_set_timer_cmd(interaction: discord.Interaction, seconds: int):
-    guild_id = require_guild(interaction)
-    s = await get_guild_extras(guild_id)
-    await welcome_set(guild_id, None, None, s.get("member_role_id"), int(seconds), None, None)
-    await interaction.response.send_message(f"✅ Member role delay set to `{seconds}` seconds.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@join_roles_group.command(name="enable_bot", description="Enable bot join roles")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def join_roles_enable_bot_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await join_roles_set_bot_enabled(guild_id, True)
-    await interaction.response.send_message("✅ Bot join roles enabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@join_roles_group.command(name="disable_bot", description="Disable bot join roles")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def join_roles_disable_bot_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await join_roles_set_bot_enabled(guild_id, False)
-    await interaction.response.send_message("✅ Bot join roles disabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@join_roles_group.command(name="set_bot_role", description="Set the role given to new bots")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def join_roles_set_bot_role_cmd(interaction: discord.Interaction, role: discord.Role):
-    guild_id = require_guild(interaction)
-    s = await get_guild_extras(guild_id)
-    await welcome_set(guild_id, None, None, None, None, int(role.id), None)
-    await interaction.response.send_message(f"✅ Bot join role set to {role.mention}.", ephemeral=True)
-
-# /prize ... (new group UX; keeps existing /prizes commands)
-prize_group = discord.app_commands.Group(name="prize", description="Prize system (preferred commands)")
-prize_config_group = discord.app_commands.Group(name="config", description="Prize configuration", parent=prize_group)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@prize_config_group.command(name="enable", description="Enable prize system (requires channels)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def prize_config_enable_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    s = await get_guild_settings(guild_id)
-    if not s.get("prize_drop_channel_id") or not s.get("winner_announce_channel_id"):
-        await interaction.response.send_message("❌ Set drop + winner channels first.", ephemeral=True)
+    action, value = next(iter(used.items()))
+    if action == "set_channel":
+        await set_modlog_channel(guild_id, int(set_channel.id))
+        await interaction.response.send_message(f"✅ Logging channel set to {set_channel.mention}.", ephemeral=True)
         return
-    await prize_set_enabled(guild_id, True)
-    await interaction.response.send_message("✅ Prize system enabled.", ephemeral=True)
+    if action == "enabled":
+        if bool(enabled):
+            s = await get_guild_extras(guild_id)
+            if not s.get("modlog_channel_id"):
+                await interaction.response.send_message("❌ Set `set_channel:` first.", ephemeral=True)
+                return
+        await set_logging_enabled(guild_id, bool(enabled))
+        await interaction.response.send_message(f"✅ Logging enabled set to `{bool(enabled)}`.", ephemeral=True)
+        return
+
+
+# =========================
+# /welcome ...
+# =========================
+welcome_group = discord.app_commands.Group(name="welcome", description="Welcome messages")
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@prize_config_group.command(name="disable", description="Disable prize system")
+@welcome_group.command(name="config", description="Configure welcome messages")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
-async def prize_config_disable_cmd(interaction: discord.Interaction):
+@discord.app_commands.describe(
+    enabled="Enable/disable welcome messages",
+    set_channel="Welcome channel",
+    set_custom_welcome="Custom welcome message template (use {user} and {name})",
+)
+async def welcome_config_cmd(
+    interaction: discord.Interaction,
+    enabled: bool | None = None,
+    set_channel: discord.TextChannel | None = None,
+    set_custom_welcome: str | None = None,
+):
     guild_id = require_guild(interaction)
-    await prize_set_enabled(guild_id, False)
-    await interaction.response.send_message("✅ Prize system disabled.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@prize_config_group.command(name="prize_drop_channel", description="Set prize drop channel")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def prize_config_drop_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
-    guild_id = require_guild(interaction)
-    await prize_set_channels(guild_id, int(channel.id), None)
-    await interaction.response.send_message(f"✅ Prize drop channel set to {channel.mention}.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@prize_config_group.command(name="winner_announce_channel", description="Set winner announce channel")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def prize_config_winner_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
-    guild_id = require_guild(interaction)
-    await prize_set_channels(guild_id, None, int(channel.id))
-    await interaction.response.send_message(f"✅ Winner announce channel set to {channel.mention}.", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@prize_config_group.command(name="add_prize", description="Add a prize")
-@discord.app_commands.checks.cooldown(rate=1, per=15.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def prize_add_cmd(interaction: discord.Interaction, title: str, description: str | None = None):
-    guild_id = require_guild(interaction)
-    pid = await prize_add_definition(guild_id, title=title, description=description)
-    await interaction.response.send_message(f"✅ Prize added ({pid}).", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@prize_config_group.command(name="remove_prize", description="Remove (disable) a prize")
-@discord.app_commands.autocomplete(prize_id=prize_autocomplete)
-@discord.app_commands.checks.cooldown(rate=1, per=15.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def prize_remove_cmd(interaction: discord.Interaction, prize_id: str):
-    guild_id = require_guild(interaction)
-    try:
-        pid = uuid.UUID(prize_id)
-    except Exception:
-        await interaction.response.send_message("❌ Invalid prize selection.", ephemeral=True)
+    actions = {"enabled": enabled, "set_channel": set_channel, "set_custom_welcome": set_custom_welcome}
+    used = {k: v for k, v in actions.items() if v is not None}
+    if len(used) != 1:
+        await interaction.response.send_message("❌ Provide exactly one option in `/welcome config`.", ephemeral=True)
         return
-    await prize_delete_definition(guild_id, pid)
-    await interaction.response.send_message("✅ Prize removed.", ephemeral=True)
+    action, value = next(iter(used.items()))
+    if action == "enabled":
+        await welcome_set_enabled(guild_id, bool(enabled))
+        await interaction.response.send_message(f"✅ Welcome enabled set to `{bool(enabled)}`.", ephemeral=True)
+        return
+    if action == "set_channel":
+        await welcome_set(guild_id, int(set_channel.id), None, None, None, None, None)
+        await interaction.response.send_message(f"✅ Welcome channel set to {set_channel.mention}.", ephemeral=True)
+        return
+    if action == "set_custom_welcome":
+        await welcome_set_message(guild_id, str(set_custom_welcome))
+        await interaction.response.send_message("✅ Welcome message updated.", ephemeral=True)
+        return
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@prize_group.command(name="schedule", description="Schedule a prize drop")
-@discord.app_commands.autocomplete(prize_id=prize_autocomplete)
-@discord.app_commands.checks.cooldown(rate=1, per=15.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def prize_schedule_cmd(interaction: discord.Interaction, month: int, day: int, prize_id: str):
-    guild_id = require_guild(interaction)
-    s = await get_guild_settings(guild_id)
-    drop_channel_id = s.get("prize_drop_channel_id")
-    if not drop_channel_id:
-        await interaction.response.send_message("❌ Set `/prize config prize_drop_channel` first.", ephemeral=True)
-        return
-    try:
-        pid = uuid.UUID(prize_id)
-    except Exception:
-        await interaction.response.send_message("❌ Invalid prize selection.", ephemeral=True)
-        return
-    local_now = guild_now(s.get("timezone") or "America/Los_Angeles")
-    year = local_now.year
-    try:
-        target = datetime.date(year, month, day)
-    except Exception:
-        await interaction.response.send_message("❌ Invalid month/day.", ephemeral=True)
-        return
-    if target < local_now.date():
-        target = datetime.date(year + 1, month, day)
-    schedule_id = await prize_add_schedule(guild_id, pid, int(drop_channel_id), target, not_before=datetime.time(0, 0, 0))
-    await interaction.response.send_message(f"✅ Scheduled for {target.isoformat()} ({schedule_id}).", ephemeral=True)
 
-@discord.app_commands.default_permissions(manage_guild=True)
-@prize_group.command(name="schedule_list", description="List scheduled prize drops")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def prize_schedule_list_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    rows = await prize_list_schedules(guild_id, limit=25)
-    if not rows:
-        await interaction.response.send_message("No schedules found.", ephemeral=True)
-        return
-    lines = [f"- `{r['schedule_id']}` {r['drop_date']} prize `{r['prize_id']}`" for r in rows]
-    await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@prize_group.command(name="schedule_delete", description="Delete a scheduled prize drop")
-@discord.app_commands.autocomplete(schedule_id=schedule_autocomplete)
-@discord.app_commands.checks.cooldown(rate=1, per=15.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def prize_schedule_delete_cmd(interaction: discord.Interaction, schedule_id: str):
-    guild_id = require_guild(interaction)
-    try:
-        sid = uuid.UUID(schedule_id)
-    except Exception:
-        await interaction.response.send_message("❌ Invalid schedule selection.", ephemeral=True)
-        return
-    await prize_delete_schedule(guild_id, sid)
-    await interaction.response.send_message("✅ Schedule deleted.", ephemeral=True)
-
+# =========================
+# Register these groups
+# =========================
+bot.tree.add_command(birthday_group)
+bot.tree.add_command(qotd_group)
+bot.tree.add_command(sticky_group)
+bot.tree.add_command(autodelete_group)
+bot.tree.add_command(voice_group)
+bot.tree.add_command(logging_group)
+bot.tree.add_command(welcome_group)
 
 bot.tree.add_command(active_group)
 bot.tree.add_command(join_group)
