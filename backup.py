@@ -114,6 +114,7 @@ ALTER TABLE guild_settings
   ADD COLUMN IF NOT EXISTS qotd_last_posted_date DATE NULL,
   ADD COLUMN IF NOT EXISTS welcome_channel_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS welcome_message_text TEXT NOT NULL DEFAULT 'Welcome to the server, {user}! 👋',
+  ADD COLUMN IF NOT EXISTS welcome_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS member_role_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS member_role_delay_seconds INT NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS bot_role_id BIGINT NULL,
@@ -1750,8 +1751,8 @@ async def get_guild_extras(guild_id: int) -> dict:
             birthday_role_id, birthday_channel_id, birthday_message_text,
             birthday_list_channel_id, birthday_list_message_id,
             qotd_channel_id, qotd_role_id, qotd_message_prefix, qotd_source_url, qotd_last_posted_date,
-            welcome_channel_id, welcome_message_text, member_role_id, member_role_delay_seconds, bot_role_id,
-            modlog_channel_id, timezone
+            welcome_channel_id, welcome_message_text, welcome_enabled, member_role_id, member_role_delay_seconds, bot_role_id,
+            logging_enabled, modlog_channel_id, timezone
           FROM guild_settings WHERE guild_id=$1""", guild_id)
     if not row:
         return {}
@@ -1941,6 +1942,24 @@ async def welcome_set(guild_id: int, channel_id: int | None, text: str | None, m
             guild_id, channel_id, text, member_role_id, delay_seconds, bot_role_id, modlog_channel_id
         )
 
+
+
+async def welcome_set_enabled(guild_id: int, enabled: bool) -> None:
+    async with db_pool.acquire() as conn:
+        await ensure_guild_row(guild_id)
+        await conn.execute(
+            "UPDATE guild_settings SET welcome_enabled=$2, updated_at=NOW() WHERE guild_id=$1;",
+            guild_id, bool(enabled)
+        )
+
+async def welcome_set_message(guild_id: int, text: str) -> None:
+    async with db_pool.acquire() as conn:
+        await ensure_guild_row(guild_id)
+        await conn.execute(
+            "UPDATE guild_settings SET welcome_message_text=$2, updated_at=NOW() WHERE guild_id=$1;",
+            guild_id, text
+        )
+
 # -------- QOTD --------
 async def qotd_set(guild_id: int, channel_id: int | None, role_id: int | None, prefix: str | None, source_url: str | None) -> None:
     async with db_pool.acquire() as conn:
@@ -2094,7 +2113,7 @@ async def on_member_join(member: discord.Member):
                 asyncio.create_task(_add_later())
 
         # Welcome message
-        if s.get("welcome_channel_id"):
+        if s.get("welcome_enabled") and s.get("welcome_channel_id"):
             ch = member.guild.get_channel(int(s["welcome_channel_id"]))
             if ch:
                 txt = s.get("welcome_message_text") or "Welcome to the server, {user}! 👋"
@@ -2908,6 +2927,37 @@ async def logging_disable_cmd(interaction: discord.Interaction):
     await set_logging_enabled(guild_id, False)
     await interaction.response.send_message("🚫 Logging disabled.", ephemeral=True)
 
+
+# ---- Welcome ----
+welcome_cfg_group = discord.app_commands.Group(name="welcome", description="Welcome messages")
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@welcome_cfg_group.command(name="enable", description="Enable welcome messages")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def welcome_enable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await welcome_set_enabled(guild_id, True)
+    await interaction.response.send_message("✅ Welcome messages enabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@welcome_cfg_group.command(name="disable", description="Disable welcome messages")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def welcome_disable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await welcome_set_enabled(guild_id, False)
+    await interaction.response.send_message("🚫 Welcome messages disabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@welcome_cfg_group.command(name="set_custom_welcome", description="Set the welcome message template (use {user})")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def welcome_set_custom_cmd(interaction: discord.Interaction, text: str):
+    guild_id = require_guild(interaction)
+    await welcome_set_message(guild_id, text)
+    await interaction.response.send_message("✅ Welcome message updated.", ephemeral=True)
+
 welcome_group = discord.app_commands.Group(name="server", description="Welcome + member/bot management")
 
 @discord.app_commands.default_permissions(manage_guild=True)
@@ -2959,6 +3009,7 @@ bot.tree.add_command(sticky_group)
 bot.tree.add_command(autodelete_group)
 bot.tree.add_command(voice_group)
 bot.tree.add_command(welcome_group)
+bot.tree.add_command(welcome_cfg_group)
 
 bot.tree.add_command(logging_group)
 ############### ON_READY & BOT START ###############
