@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 import discord
 from discord.ext import commands
+from urllib.parse import quote_plus
 
 ############### MESSAGE TEMPLATES ###############
 MSG = {
@@ -3184,6 +3185,19 @@ MOVIE_MSG = {
     "library_not_configured": "❌ Movie library is not configured yet.",
 }
 
+
+def _movies_default_csv_url() -> str | None:
+    """Build a CSV export URL for the Movies tab using env vars.
+
+    Uses QOTD_SHEET_ID (preferred) or GOOGLE_SHEET_ID, and MOVIES_TAB (default 'Movies').
+    """
+    sheet_id = os.getenv("QOTD_SHEET_ID") or os.getenv("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        return None
+    tab = os.getenv("MOVIES_TAB", "Movies")
+    # gviz csv export
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={quote_plus(tab)}"
+
 async def ensure_movie_tables():
     """Create movie tables if they don't exist yet. Called lazily from movie commands only."""
     global db_pool
@@ -3665,9 +3679,12 @@ async def movies_library_reload_cmd(interaction: discord.Interaction):
     if not await _require_dev_guild(interaction):
         return
     settings = await movie_get_settings(int(interaction.guild.id))
-    src = settings.get("library_source_url")
+    src = settings.get("library_source_url") or _movies_default_csv_url()
     if not src:
-        await interaction.response.send_message(MOVIE_MSG["library_not_configured"], ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Movie library source is not configured. Set `/movies set_library_source` or set `QOTD_SHEET_ID` and `MOVIES_TAB` in Railway.",
+            ephemeral=True,
+        )
         return
     rows = await _fetch_csv_rows(src)
     async with db_pool.acquire() as conn:
