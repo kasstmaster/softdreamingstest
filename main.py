@@ -35,7 +35,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 
 # Only allow certain actions in these guild(s)
-# Set DEV_GUILD_ID in your environment (recommended), or hardcode IDs into the set.
 DEV_GUILD_IDS = {
     int(os.getenv("DEV_GUILD_ID", "0")),
     # 123456789012345678,
@@ -58,9 +57,6 @@ ACTIVE_THRESHOLD_CHOICES = [
     discord.app_commands.Choice(name="24 hours", value=1440),
 ]
 
-# Voice role link modes
-# - add_on_join: add role when user joins voice channel, remove when they leave
-# - remove_on_join: remove role when user joins voice channel, add when they leave
 VOICE_MODE_CHOICES = [
     discord.app_commands.Choice(name="Add role on join (remove on leave)", value="add_on_join"),
     discord.app_commands.Choice(name="Remove role on join (add on leave)", value="remove_on_join"),
@@ -1423,21 +1419,18 @@ async def deadchat_attempt_award(bot: commands.Bot, message: discord.Message) ->
 async def maybe_trigger_plague(guild: discord.Guild, winner_user_id: int, source_channel_id: int) -> None:
     settings = await get_guild_settings(int(guild.id))
 
-    # Feature must be enabled and scheduled
     if not settings.get("plague_enabled"):
         return
     scheduled_day = settings.get("plague_scheduled_day")
     if not scheduled_day:
         return
 
-    # Plague day is evaluated in UTC, and only triggers after 12:00 UTC
     utc_now = now_utc()
     if utc_now.date() != scheduled_day:
         return
     if utc_now.hour < 12:
         return
 
-    # Only trigger once per day (restart-safe)
     if await plague_daily_already_triggered(int(guild.id), scheduled_day):
         return
 
@@ -1459,11 +1452,9 @@ async def maybe_trigger_plague(guild: discord.Guild, winner_user_id: int, source
     except Exception:
         return
 
-    # Persist infection + mark consumed for the day
     await plague_add_infection(int(guild.id), winner_user_id, expires_at, source_channel_id)
     await plague_mark_triggered(int(guild.id), scheduled_day, winner_user_id)
 
-    # Announce in the same Dead Chat channel (silent expiry later)
     channel = guild.get_channel(int(source_channel_id))
     if channel:
         try:
@@ -1625,7 +1616,6 @@ async def schedule_autocomplete(interaction: discord.Interaction, current: str):
 ############### BACKGROUND TASKS & SCHEDULERS ###############
 
 async def birthday_daily_loop(bot: commands.Bot):
-    # Runs once per minute, triggers on local midnight per guild timezone.
     last_seen: dict[int, date] = {}
     while not bot.is_closed():
         try:
@@ -1648,14 +1638,11 @@ async def birthday_daily_loop(bot: commands.Bot):
                 if not r.get("birthday_role_id") or not r.get("birthday_channel_id"):
                     continue
 
-                # remove birthday role from anyone who has it but isn't birthday today
                 role_id = r["birthday_role_id"]
                 role = guild.get_role(int(role_id)) if role_id else None
 
-                # announce + assign role for today's birthdays
                 bdays = await birthday_list_all(guild_id)
                 todays = [b for b in bdays if int(b["month"]) == today.month and int(b["day"]) == today.day]
-                # role cleanup first
                 if role:
                     try:
                         for m in role.members:
@@ -1668,7 +1655,6 @@ async def birthday_daily_loop(bot: commands.Bot):
                     await update_birthday_list_message(bot, guild_id)
                     continue
 
-                # send announcements
                 channel = guild.get_channel(int(r["birthday_channel_id"])) if r["birthday_channel_id"] else None
                 msg_t = r["birthday_message_text"] or MSG["birthday_announce"]
 
@@ -1736,7 +1722,6 @@ async def qotd_daily_loop(bot: commands.Bot):
                 guild_id = int(r["guild_id"])
                 tz = r["timezone"] or "America/Los_Angeles"
                 today = guild_now(tz).date()
-                # post at ~09:00 local time
                 now_local = guild_now(tz)
                 if now_local.hour != 9:
                     continue
@@ -1768,7 +1753,7 @@ async def qotd_daily_loop(bot: commands.Bot):
                         pick = q
                         break
                 if pick is None:
-                    pick = questions[0]  # fall back
+                    pick = questions[0] 
 
                 prefix = r["qotd_message_prefix"] or MSG["qotd_header"]
                 role_ping = ""
@@ -2082,12 +2067,10 @@ async def qotd_recent_hashes(guild_id: int, limit: int = 200) -> set[str]:
     return {r["question_hash"] for r in rows}
 
 async def fetch_questions_from_source(source_url: str) -> list[str]:
-    # Supports: (1) raw text with one question per line, or (2) CSV with first column 'question'
     async with aiohttp.ClientSession() as session:
         async with session.get(source_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
             resp.raise_for_status()
             txt = await resp.text()
-    # basic CSV detection
     if "," in txt.splitlines()[0]:
         out=[]
         for line in txt.splitlines()[1:]:
@@ -2134,13 +2117,11 @@ async def on_message(message: discord.Message):
     except Exception:
         pass
 
-    # Sticky messages
     try:
         s = await sticky_get(guild_id, channel_id)
         if s:
             old_id = s["message_id"]
             content = s["content"]
-            # delete previous sticky if we can
             if old_id:
                 try:
                     old_msg = await message.channel.fetch_message(int(old_id))
@@ -2155,7 +2136,6 @@ async def on_message(message: discord.Message):
     except Exception:
         pass
 
-    # Auto-delete
     try:
         ad = await autodelete_get_channel(guild_id, channel_id)
         if ad:
@@ -2179,7 +2159,6 @@ async def on_member_join(member: discord.Member):
         await ensure_guild_row(guild_id)
         s = await get_guild_extras(guild_id)
 
-        # Auto-roles
         if member.bot and s.get("bot_role_id"):
             role = member.guild.get_role(int(s["bot_role_id"]))
             if role:
@@ -2199,7 +2178,6 @@ async def on_member_join(member: discord.Member):
                         pass
                 asyncio.create_task(_add_later())
 
-        # Welcome message
         if s.get("welcome_enabled") and s.get("welcome_channel_id"):
             ch = member.guild.get_channel(int(s["welcome_channel_id"]))
             if ch:
@@ -2209,7 +2187,6 @@ async def on_member_join(member: discord.Member):
                 except Exception:
                     pass
 
-        # Log join
         if s.get("logging_enabled") and s.get("modlog_channel_id"):
             ch = member.guild.get_channel(int(s["modlog_channel_id"]))
             if ch:
@@ -2235,7 +2212,6 @@ async def on_member_remove(member: discord.Member):
 
         action = "left"
         actor = None
-        # Try to detect kick via audit log (best-effort)
         try:
             async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
                 if entry.target and int(entry.target.id) == int(member.id):
@@ -2282,7 +2258,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         return
     guild_id = int(member.guild.id)
 
-    # Leaving a linked channel
     if before.channel and (not after.channel or int(after.channel.id) != int(before.channel.id)):
         link = await voice_role_get_link(guild_id, int(before.channel.id))
         if link:
@@ -2296,7 +2271,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 except Exception:
                     pass
 
-    # Joining a linked channel
     if after.channel and (not before.channel or int(before.channel.id) != int(after.channel.id)):
         link = await voice_role_get_link(guild_id, int(after.channel.id))
         if link:
@@ -2338,9 +2312,6 @@ async def _require_one_action(interaction: discord.Interaction, used: list[str],
         return False
     return True
 
-# ------------------------
-# Public (non-admin) command
-# ------------------------
 @bot.tree.command(name="birthday_set", description="Set your birthday (month/day/year)")
 async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: int, year: int | None = None):
     guild_id = require_guild(interaction)
@@ -2348,16 +2319,10 @@ async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: in
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message(f"✅ Birthday saved: {int(month):02d}/{int(day):02d}", ephemeral=True)
 
-# ------------------------
-# Groups
-# ------------------------
 config_group = discord.app_commands.Group(name="config", description="Configuration commands")
 messages_group = discord.app_commands.Group(name="messages", description="Message/announcement commands")
 schedule_group = discord.app_commands.Group(name="schedule", description="Scheduling commands")
 
-# ------------------------
-# /config system  (info/timezone/ping/test_all are inputs here)
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="system", description="System utilities")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2407,7 +2372,6 @@ async def config_system_cmd(
         await interaction.response.send_message(f"⏰ Current timezone: `{s['timezone']}`", ephemeral=True)
         return
 
-    # info
     s = await get_guild_extras(guild_id)
     await interaction.response.send_message(
         "Settings:\n"
@@ -2418,10 +2382,6 @@ async def config_system_cmd(
         ephemeral=True,
     )
 
-
-# ------------------------
-# /config logging
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="logging", description="Configure join/leave logging")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2467,9 +2427,6 @@ async def config_logging_cmd(
             ephemeral=True,
         )
 
-# ------------------------
-# /config active
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="active", description="Activity Tracking settings")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2544,16 +2501,12 @@ async def config_active_cmd(
         await interaction.response.send_message("Activity channels:\n" + "\n".join(mentions), ephemeral=True)
         return
 
-    # show_active
     s = await get_guild_settings(guild_id)
     await interaction.response.send_message(
         f"Mode: `{s['active_mode']}`\nThreshold: `{s['active_threshold_minutes']}` minute(s)\nActive role ID: `{s['active_role_id']}`",
         ephemeral=True,
     )
 
-# ------------------------
-# /config qotd
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="qotd", description="Configure QOTD")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2574,7 +2527,6 @@ async def config_qotd_cmd(
         return
     action = used[0]
 
-    # QOTD does not have a DB enabled flag; emulate enable/disable by requiring channel+source to run.
     if action == "enable":
         if enable:
             s = await get_guild_extras(guild_id)
@@ -2603,7 +2555,6 @@ async def config_qotd_cmd(
         await interaction.response.send_message("✅ QOTD source updated.", ephemeral=True)
         return
 
-    # post_now
     s = await get_guild_extras(guild_id)
     if not s.get("qotd_channel_id") or not s.get("qotd_source_url"):
         return await interaction.response.send_message("❌ Set qotd channel + source first.", ephemeral=True)
@@ -2635,9 +2586,6 @@ async def config_qotd_cmd(
     except Exception:
         await interaction.response.send_message("❌ Failed to post QOTD (check source URL).", ephemeral=True)
 
-# ------------------------
-# /config autodelete
-# ------------------------
 @discord.app_commands.default_permissions(manage_channels=True)
 @config_group.command(name="autodelete", description="Auto-delete configuration")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2700,9 +2648,6 @@ async def config_autodelete_cmd(
         await interaction.response.send_message(txt, ephemeral=True)
         return
 
-# ------------------------
-# /config birthday  (admin)
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="birthday", description="Configure birthday system")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2802,13 +2747,9 @@ async def config_birthday_cmd(
         await interaction.response.send_message(f"✅ Birthday list published in {publish_list.mention}", ephemeral=True)
         return
 
-    # announce
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message("✅ Birthday list updated (daily announce loop will handle announcements).", ephemeral=True)
 
-# ------------------------
-# /config deadchat
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="deadchat", description="Configure Dead Chat")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2880,9 +2821,6 @@ async def config_deadchat_cmd(
     await set_deadchat_requires_active(guild_id, bool(require_active.value))
     await interaction.response.send_message(f"✅ Require Active set to `{bool(require_active.value)}`", ephemeral=True)
 
-# ------------------------
-# /config plague
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="plague", description="Configure Plague Day")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2904,7 +2842,6 @@ async def config_plague_cmd(
         await interaction.response.send_message(f"✅ Plague role set to {set_role.mention}", ephemeral=True)
         return
 
-    # enable
     if enable:
         s = await get_guild_settings(guild_id)
         missing = []
@@ -2917,9 +2854,6 @@ async def config_plague_cmd(
     await plague_set_enabled(guild_id, bool(enable))
     await interaction.response.send_message(f"✅ Plague enabled set to `{bool(enable)}`", ephemeral=True)
 
-# ------------------------
-# /schedule plague
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @schedule_group.command(name="plague", description="Schedule a Plague Day (YYYY-MM-DD)")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -2937,9 +2871,6 @@ async def schedule_plague_cmd(interaction: discord.Interaction, day: str):
 
     await interaction.response.send_message(f"✅ Plague Day scheduled for `{d.isoformat()}` (triggers after 12:00 UTC).", ephemeral=True)
 
-# ------------------------
-# /config prize
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="prize", description="Configure prizes")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -3004,9 +2935,6 @@ async def config_prize_cmd(
     await prize_delete_definition(guild_id, pid)
     await interaction.response.send_message("✅ Prize deleted.", ephemeral=True)
 
-# ------------------------
-# /schedule prize
-# ------------------------
 @schedule_group.command(name="prize", description="Prize schedule actions")
 @discord.app_commands.autocomplete(select_prize=prize_autocomplete, cancel_prize=schedule_autocomplete)
 @discord.app_commands.choices(not_before=PRIZE_TIME_CHOICES)
@@ -3066,7 +2994,6 @@ async def schedule_prize_cmd(
             ephemeral=True,
         )
 
-    # select_prize
     if set_month is None or set_day is None:
         return await interaction.response.send_message("❌ For `select_prize`, you must also provide `set_month` and `set_day`.", ephemeral=True)
     if channel is None:
@@ -3089,9 +3016,6 @@ async def schedule_prize_cmd(
     sid = await prize_schedule_add(guild_id, d, t, int(channel.id), pid)
     await interaction.response.send_message(f"✅ Scheduled.\nSchedule ID: `{sid}`", ephemeral=True)
 
-# ------------------------
-# /config vc_link_roles  (voice role links)
-# ------------------------
 @discord.app_commands.default_permissions(manage_roles=True)
 @config_group.command(name="vc_link_roles", description="Configure voice role links")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -3137,9 +3061,6 @@ async def config_vc_link_roles_cmd(
     await voice_role_set_link(guild_id, int(voice_channel.id), int(role.id), mode.value)
     await interaction.response.send_message(f"✅ Linked {voice_channel.mention} ↔ {role.mention} ({mode.value})", ephemeral=True)
 
-# ------------------------
-# /config join_roles
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @config_group.command(name="join_roles", description="Configure join roles")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -3182,13 +3103,9 @@ async def config_join_roles_cmd(
         await interaction.response.send_message("✅ To disable bot role, clear it in DB (not implemented as a single action here).", ephemeral=True)
         return
 
-    # set_bot_role
     await welcome_set(guild_id, None, None, None, None, int(set_bot_role.id), None)
     await interaction.response.send_message("✅ Bot join role updated.", ephemeral=True)
 
-# ------------------------
-# /messages welcome
-# ------------------------
 @discord.app_commands.default_permissions(manage_guild=True)
 @messages_group.command(name="welcome", description="Configure welcome messages")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -3210,9 +3127,6 @@ async def messages_welcome_cmd(
     await welcome_set_message(guild_id, set_custom_welcome)
     await interaction.response.send_message("✅ Welcome message updated.", ephemeral=True)
 
-# ------------------------
-# /messages sticky
-# ------------------------
 @discord.app_commands.default_permissions(manage_channels=True)
 @messages_group.command(name="sticky", description="Sticky message")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
@@ -3242,7 +3156,6 @@ async def messages_sticky_cmd(
     await sticky_clear(guild_id, int(channel.id))
     await interaction.response.send_message(f"✅ Sticky cleared for {channel.mention}", ephemeral=True)
 
-# Register groups
 bot.tree.add_command(config_group)
 bot.tree.add_command(messages_group)
 bot.tree.add_command(schedule_group)
