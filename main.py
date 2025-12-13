@@ -8,6 +8,28 @@ import asyncpg
 import discord
 from discord.ext import commands
 
+############### MESSAGE TEMPLATES ###############
+MSG = {
+    # Dead Chat
+    "deadchat_awarded": "💀 {user} revived the chat and stole **Dead Chat**!",
+
+    # Plague
+    "plague_infected": "☣️ **Plague Day!** {user} has been infected for **{days} days**.",
+
+    # Prize
+    "prize_drop": "🎁 Prize Drop! First to claim it wins.",
+    "prize_claimed_channel": "🏆 {user} claimed **{prize}**!",
+
+    # Birthday
+    "birthday_announce": "🎉 Happy Birthday {user}! 🎂",
+
+    # Welcome
+    "welcome": "Welcome to the server, {user}! 👋",
+
+    # QOTD
+    "qotd_header": "❓ **Question of the Day**",
+}
+
 ############### CONSTANTS & CONFIG ###############
 DATABASE_URL = os.getenv("DATABASE_URL")
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
@@ -1383,8 +1405,9 @@ async def deadchat_attempt_award(bot: commands.Bot, message: discord.Message) ->
                 await old_msg.delete()
             except Exception:
                 pass
-        announce_text = f"💀 {message.author.mention} revived the chat and stole **Dead Chat**!"
-        sent = None
+        text = MSG["deadchat_awarded"]
+        text = format_template(text, message.author)
+        sent = await message.channel.send(text)
         try:
             sent = await message.channel.send(announce_text)
         except Exception:
@@ -1444,7 +1467,9 @@ async def maybe_trigger_plague(guild: discord.Guild, winner_user_id: int, source
     channel = guild.get_channel(int(source_channel_id))
     if channel:
         try:
-            await channel.send(f"☣️ **Plague Day!** {member.mention} has been infected for **3 days**.")
+            text = MSG["plague_infected"].replace("{days}", "3")
+            text = format_template(text, member)
+            await channel.send(text)
         except Exception:
             pass
 
@@ -1470,7 +1495,7 @@ async def maybe_trigger_prize_drop(guild: discord.Guild, winner_user_id: int) ->
             embed.set_image(url=prize["image_url"])
         except Exception:
             pass
-    content = f"🎁 Prize Drop! First to claim it wins."
+    content = MSG["prize_drop"]
     try:
         msg = await channel.send(content=content, embed=embed, view=view)
     except Exception:
@@ -1534,7 +1559,9 @@ class PrizeClaimView(discord.ui.View):
         title = prize["title"] if prize else "Prize"
         await interaction.response.send_message(f"✅ You claimed **{title}**!", ephemeral=True)
         try:
-            await interaction.channel.send(f"🏆 {interaction.user.mention} claimed **{title}**!")
+            text = MSG["prize_claimed_channel"].replace("{prize}", title)
+            text = format_template(text, interaction.user)
+            await interaction.channel.send(text)
         except Exception:
             pass
 
@@ -1643,7 +1670,7 @@ async def birthday_daily_loop(bot: commands.Bot):
 
                 # send announcements
                 channel = guild.get_channel(int(r["birthday_channel_id"])) if r["birthday_channel_id"] else None
-                msg_t = r["birthday_message_text"] or "🎉 Happy Birthday {user}! 🎂"
+                msg_t = r["birthday_message_text"] or MSG["birthday_announce"]
 
                 for b in todays:
                     uid = int(b["user_id"])
@@ -1743,7 +1770,7 @@ async def qotd_daily_loop(bot: commands.Bot):
                 if pick is None:
                     pick = questions[0]  # fall back
 
-                prefix = r["qotd_message_prefix"] or "❓ **Question of the Day**"
+                prefix = r["qotd_message_prefix"] or MSG["qotd_header"]
                 role_ping = ""
                 if r["qotd_role_id"]:
                     role = guild.get_role(int(r["qotd_role_id"]))
@@ -2176,7 +2203,7 @@ async def on_member_join(member: discord.Member):
         if s.get("welcome_enabled") and s.get("welcome_channel_id"):
             ch = member.guild.get_channel(int(s["welcome_channel_id"]))
             if ch:
-                txt = s.get("welcome_message_text") or "Welcome to the server, {user}! 👋"
+                txt = s.get("welcome_message_text") or MSG["welcome"]
                 try:
                     await ch.send(format_template(txt, member))
                 except Exception:
