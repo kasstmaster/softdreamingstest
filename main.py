@@ -3402,14 +3402,32 @@ async def movie_pick_random(guild: discord.Guild) -> tuple[str | None, int | Non
 
 # -------- Public commands (manual pool) --------
 
-@bot.tree.command(name="pick", description="Add a movie title to the Movie Night pool")
-@discord.app_commands.describe(title="Movie title to add to the pool")
-async def pick_cmd(interaction: discord.Interaction, title: str):
+
+
+@bot.tree.command(name="browse", description="Browse the synced movie library (dev server only)")
+async def browse_cmd(interaction: discord.Interaction):
+    await open_movie_browser(interaction)
+
+@bot.tree.command(name="pick", description="Add a movie to the Movie Night pool")
+@discord.app_commands.describe(title="Movie title (optional if this server has a synced movie database)")
+async def pick_cmd(interaction: discord.Interaction, title: str | None = None):
     if interaction.guild is None:
         await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
         return
     guild_id = int(interaction.guild.id)
     user_id = int(interaction.user.id)
+
+    # If this server has a synced movie database (dev_library), and no title was provided,
+    # open the browser UI instead of requiring manual entry.
+    settings = await movie_get_settings(guild_id)
+    if title is None and settings.get("mode") == "dev_library":
+        await open_movie_browser(interaction)
+        return
+
+    if not title:
+        await interaction.response.send_message("❌ Please provide a movie title.", ephemeral=True)
+        return
+
     title = _norm_title(title)
 
     ok, err = await movie_pool_add(guild_id, user_id, title)
@@ -3504,7 +3522,6 @@ async def pool_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="random", description="Pick a random winner from the Movie Night pool")
-@discord.app_commands.default_permissions(manage_guild=True)
 async def random_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
         await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
@@ -3824,3 +3841,165 @@ async def runner():
 
 if __name__ == "__main__":
     asyncio.run(runner())
+
+# -------- Library browsing UI (dev_library mode) --------
+
+async def movie_library_list(guild_id: int):
+    await ensure_movie_tables()
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT sheet_key, title
+            FROM movie_library_items
+            WHERE guild_id=$1 AND active=TRUE
+            ORDER BY title ASC
+            """,
+            int(guild_id),
+        )
+    return [(str(r["sheet_key"]), str(r["title"])) for r in rows]
+
+
+class MovieBrowserView(discord.ui.View):
+    def __init__(self, guild_id: int, user_id: int, items: list[tuple[str, str]], page: int = 0):
+        super().__init__(timeout=600)
+        self.guild_id = int(guild_id)
+        self.user_id = int(user_id)
+        self.items = items
+        self.page = int(page)
+
+        # Build initial select
+        self._rebuild_select()
+
+    def _page_count(self) -> int:
+        if not self.items:
+            return 1
+        return (len(self.items) + 24) // 25
+
+    def _slice(self) -> list[tuple[str, str]]:
+        start = self.page * 25
+        end = start + 25
+        return self.items[start:end]
+
+    def _rebuild_select(self):
+        # Remove existing selects
+        for child in list(self.children):
+            if isinstance(child, discord.ui.Select):
+                self.remove_item(child)
+
+        page_items = self._slice()
+        options = []
+        for sheet_key, title in page_items:
+            label = title[:100]
+            options.append(discord.SelectOption(label=label, value=sheet_key))
+
+        select = discord.ui.Select(placeholder="✅ Select One", min_values=1, max_values=1, options=options)
+
+        async def _select_callback(interaction: discord.Interaction):
+            if interaction.guild is None or int(interaction.guild.id) != self.guild_id:
+                await interaction.response.send_message("❌ Wrong server.", ephemeral=True)
+                return
+            if int(interaction.user.id) != self.user_id:
+                await interaction.response.send_message("❌ This menu isn't for you.", ephemeral=True)
+                return
+
+            sheet_key = select.values[0]
+            title_map = {k: t for k, t in self._slice()}
+            # If the selected key isn't in the current slice (rare), fall back to global map
+            if sheet_key not in title_map:
+                title_map = {k: t for k, t in self.items}
+            picked_title = title_map.get(sheet_key)
+            if not picked_title:
+                await interaction.response.send_message("❌ Could not find that title.", ephemeral=True)
+                return
+
+            ok, err = await movie_pool_add(self.guild_id, int(interaction.user.id), picked_title)
+            if not ok:
+                settings = await movie_get_settings(self.guild_id)
+                if err == "duplicate":
+                    await interaction.response.send_message(MOVIE_MSG["pick_duplicate"], ephemeral=True)
+                    return
+                if err == "limit":
+                    limit = int(settings.get("per_user_limit") or 3)
+                    await interaction.response.send_message(
+                        MOVIE_MSG["pick_limit"].replace("{limit}", str(limit)),
+                        ephemeral=True,
+                    )
+                    return
+                await interaction.response.send_message("❌ Could not add that pick.", ephemeral=True)
+                return
+
+            await movie_pool_update_display(interaction.guild)
+            await interaction.response.send_message(
+                MOVIE_MSG["pick_added"].replace("{title}", picked_title),
+                ephemeral=True,
+            )
+
+        select.callback = _select_callback
+        self.add_item(select)
+
+    async def _edit(self, interaction: discord.Interaction):
+        # rebuild select options for this page and edit message
+        self._rebuild_select()
+        embed = build_movie_browser_embed(self.items, self.page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if int(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("❌ This menu isn't for you.", ephemeral=True)
+            return
+        self.page = max(0, self.page - 1)
+        await self._edit(interaction)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if int(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("❌ This menu isn't for you.", ephemeral=True)
+            return
+        self.page = min(self._page_count() - 1, self.page + 1)
+        await self._edit(interaction)
+
+
+def build_movie_browser_embed(items: list[tuple[str, str]], page: int) -> discord.Embed:
+    total = len(items)
+    pages = (total + 24) // 25 if total else 1
+    page = max(0, min(int(page), pages - 1))
+
+    start = page * 25
+    end = min(start + 25, total)
+    lines = []
+    for i, (_, title) in enumerate(items[start:end], start=start + 1):
+        lines.append(f"{i}. {title}")
+
+    desc = "\n".join(lines) if lines else "No movies found."
+    embed = discord.Embed(
+        title="Movies",
+        description=desc
+    )
+    embed.set_footer(text=f"Page {page+1}/{pages} ({total} total)")
+    return embed
+
+
+async def open_movie_browser(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+        return
+    guild_id = int(interaction.guild.id)
+    if DEV_GUILD_IDS and guild_id not in DEV_GUILD_IDS:
+        await interaction.response.send_message("❌ No movie database is synced for this server.", ephemeral=True)
+        return
+    settings = await movie_get_settings(guild_id)
+    if settings.get("mode") != "dev_library":
+        await interaction.response.send_message("❌ No movie database is synced for this server.", ephemeral=True)
+        return
+
+    items = await movie_library_list(guild_id)
+    if not items:
+        await interaction.response.send_message("❌ No movie database is synced for this server.", ephemeral=True)
+        return
+
+    view = MovieBrowserView(guild_id=guild_id, user_id=int(interaction.user.id), items=items, page=0)
+    embed = build_movie_browser_embed(items, 0)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
