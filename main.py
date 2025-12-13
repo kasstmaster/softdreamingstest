@@ -2690,7 +2690,7 @@ async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: in
     await interaction.response.send_message(f"✅ Birthday saved: {month:02d}/{day:02d}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="config", description="Configure birthday system")
+@birthday_group.command(name="settings", description="Configure birthday system")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_config_cmd(
@@ -2722,7 +2722,7 @@ async def birthday_config_cmd(
     ok = await _require_one_action(
         interaction,
         used,
-        "Example: `/birthday config enable:true` or `/birthday config set_role:@Role` or `/birthday config set_for:@User month:12 day:25`",
+        "Example: `/birthday settings enable:true` or `/birthday settings set_role:@Role` or `/birthday settings set_for:@User month:12 day:25`",
     )
     if not ok:
         return
@@ -2930,7 +2930,7 @@ async def welcome_cmd(
 deadchat_group2 = discord.app_commands.Group(name="deadchat", description="Dead Chat settings (single command)")
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@deadchat_group2.command(name="config", description="Configure Dead Chat")
+@deadchat_group2.command(name="settings", description="Configure Dead Chat")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 @discord.app_commands.choices(require_active=BOOL_CHOICES)
@@ -2959,7 +2959,7 @@ async def deadchat_config_cmd(
         set_cooldown=set_cooldown,
         require_active=require_active,
     )
-    ok = await _require_one_action(interaction, used, "Example: `/deadchat config add_channels:#general` or `/deadchat config set_role:@DeadChat`")
+    ok = await _require_one_action(interaction, used, "Example: `/deadchat settings add_channels:#general` or `/deadchat settings set_role:@DeadChat`")
     if not ok:
         return
     action = used[0]
@@ -3010,7 +3010,7 @@ async def deadchat_config_cmd(
 server_group2 = discord.app_commands.Group(name="server", description="Server configuration (single command)")
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@server_group2.command(name="config", description="Configure server systems")
+@server_group2.command(name="settings", description="Configure server systems")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def server_config_cmd(
@@ -3032,7 +3032,7 @@ async def server_config_cmd(
         set_bot_role=set_bot_role,
         set_modlog=set_modlog,
     )
-    ok = await _require_one_action(interaction, used, "Example: `/server config set_welcome:#welcome welcome_message:\"Hi {user}!\"`")
+    ok = await _require_one_action(interaction, used, "Example: `/server settings set_welcome:#welcome welcome_message:\"Hi {user}!\"`")
     if not ok:
         return
     action = used[0]
@@ -3074,7 +3074,7 @@ async def server_config_cmd(
 plague_group2 = discord.app_commands.Group(name="plague", description="Plague settings (single command)")
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@plague_group2.command(name="config", description="Configure Plague Day")
+@plague_group2.command(name="settings", description="Configure Plague Day")
 @discord.app_commands.checks.cooldown(rate=1, per=5.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def plague_config_cmd(
@@ -3085,7 +3085,7 @@ async def plague_config_cmd(
 ):
     guild_id = require_guild(interaction)
     used = _count_set(enable=enable, set_role=set_role, schedule_day=schedule_day)
-    ok = await _require_one_action(interaction, used, "Example: `/plague config set_role:@Plague` or `/plague config schedule_day:2026-01-01`")
+    ok = await _require_one_action(interaction, used, "Example: `/plague settings set_role:@Plague` or `/plague settings schedule_day:2026-01-01`")
     if not ok:
         return
     action = used[0]
@@ -3207,7 +3207,7 @@ async def prize_schedule_cmd2(
     sid = await prize_schedule_add(guild_id, d, t, int(channel.id), pid)
     await interaction.response.send_message(f"✅ Scheduled.\nSchedule ID: `{sid}`", ephemeral=True)
 
-@prize_group2.command(name="config", description="Configure prizes (single command)")
+@prize_group2.command(name="settings", description="Configure prizes (single command)")
 @discord.app_commands.choices(enable=BOOL_CHOICES)
 async def prize_config_cmd2(
     interaction: discord.Interaction,
@@ -3230,7 +3230,7 @@ async def prize_config_cmd2(
     ok = await _require_one_action(
         interaction,
         used,
-        "Examples: `/prize config enable:Enabled` or `/prize config prize_drop_channel:#drops` or `/prize config add_prize:\"Gift Card\"`",
+        "Examples: `/prize settings enable:Enabled` or `/prize settings prize_drop_channel:#drops` or `/prize settings add_prize:\"Gift Card\"`",
     )
     if not ok:
         return
@@ -3339,7 +3339,7 @@ async def sticky_cmd(
 voice_group2 = discord.app_commands.Group(name="voice", description="Voice role links (single command)")
 
 @discord.app_commands.default_permissions(manage_roles=True)
-@voice_group2.command(name="config", description="Configure voice role links")
+@voice_group2.command(name="settings", description="Configure voice role links")
 @discord.app_commands.checks.has_permissions(manage_roles=True)
 @discord.app_commands.choices(mode=VOICE_MODE_CHOICES)
 async def voice_config_cmd(
@@ -3353,7 +3353,7 @@ async def voice_config_cmd(
 ):
     guild_id = require_guild(interaction)
     used = _count_set(link=link, unlink=unlink, list=list)
-    ok = await _require_one_action(interaction, used, "Example: `/voice config link:true voice_channel:... role:... mode:...`")
+    ok = await _require_one_action(interaction, used, "Example: `/voice settings link:true voice_channel:... role:... mode:...`")
     if not ok:
         return
     action = used[0]
