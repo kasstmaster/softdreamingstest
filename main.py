@@ -36,9 +36,11 @@ TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 
 # Only allow certain actions in these guild(s)
 DEV_GUILD_IDS = {
-    int(os.getenv("DEV_GUILD_ID", "0")),
-    # 123456789012345678,
+    int(gid.strip())
+    for gid in os.getenv("DEV_GUILD_ID", "").split(",")
+    if gid.strip().isdigit()
 }
+
 DEV_GUILD_IDS.discard(0)
 
 
