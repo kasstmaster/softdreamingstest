@@ -1537,10 +1537,6 @@ class PrizeClaimView(discord.ui.View):
             await interaction.channel.send(f"🏆 {interaction.user.mention} claimed **{title}**!")
         except Exception:
             pass
-        try:
-            await interaction.user.send(f"✅ You claimed **{title}** in **{interaction.guild.name}**.")
-        except Exception:
-            pass
 
 ############### AUTOCOMPLETE FUNCTIONS ###############
 async def timezone_autocomplete(interaction: discord.Interaction, current: str):
@@ -1773,10 +1769,6 @@ async def schedule_message_delete(message: discord.Message, delay_seconds: int, 
             await asyncio.sleep(max(1, delay_seconds))
             try:
                 await message.delete()
-                if log_channel_id:
-                    ch = message.guild.get_channel(int(log_channel_id))
-                    if ch:
-                        await ch.send(f"🗑️ Deleted message in <#{message.channel.id}> from {message.author.mention}")
             except Exception:
                 pass
         finally:
