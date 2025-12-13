@@ -12,6 +12,11 @@ from discord.ext import commands
 DATABASE_URL = os.getenv("DATABASE_URL")
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 
+QOTD_SHEET_ID = os.getenv("QOTD_SHEET_ID")
+QOTD_TAB_REGULAR = os.getenv("QOTD_TAB_REGULAR", "Regular")
+QOTD_TAB_FALL = os.getenv("QOTD_TAB_FALL", "Fall Season")
+QOTD_TAB_CHRISTMAS = os.getenv("QOTD_TAB_CHRISTMAS", "Christmas")
+
 ACTIVE_MODE_CHOICES = [
     discord.app_commands.Choice(name="Any message anywhere in the server", value="all"),
     discord.app_commands.Choice(name="Messages only in configured channels", value="channels"),
@@ -107,6 +112,7 @@ ALTER TABLE guild_settings
   ADD COLUMN IF NOT EXISTS birthday_message_text TEXT NOT NULL DEFAULT '🎉 Happy Birthday {user}! 🎂',
   ADD COLUMN IF NOT EXISTS birthday_list_channel_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS birthday_list_message_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS qotd_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS qotd_channel_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS qotd_role_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS qotd_message_prefix TEXT NOT NULL DEFAULT '❓ **Question of the Day**',
@@ -327,6 +333,7 @@ REQUIRED_TABLES = [
     "prize_definitions",
     "prize_schedules",
     "prize_drops",
+    "qotd_history",
 ]
 
 async def table_exists(name: str) -> bool:
@@ -1638,19 +1645,26 @@ async def qotd_daily_loop(bot: commands.Bot):
     while not bot.is_closed():
         try:
             async with db_pool.acquire() as conn:
-                rows = await conn.fetch("SELECT guild_id, timezone, qotd_channel_id, qotd_role_id, qotd_message_prefix, qotd_source_url FROM guild_settings;")
+                rows = await conn.fetch(
+                    "SELECT guild_id, timezone, qotd_enabled, qotd_channel_id, qotd_role_id FROM guild_settings;"
+                )
             for r in rows:
                 guild_id = int(r["guild_id"])
                 tz = r["timezone"] or "America/Los_Angeles"
-                today = guild_now(tz).date()
-                # post at ~09:00 local time
                 now_local = guild_now(tz)
+                today = now_local.date()
+
+                # Post at ~09:00 local time
                 if now_local.hour != 9:
                     continue
                 if last_seen.get(guild_id) == today:
                     continue
-                if not r["qotd_channel_id"] or not r["qotd_source_url"]:
+
+                if not r.get("qotd_enabled"):
                     continue
+                if not r["qotd_channel_id"]:
+                    continue
+
                 if await qotd_was_posted_today(guild_id, today):
                     last_seen[guild_id] = today
                     continue
@@ -1663,11 +1677,12 @@ async def qotd_daily_loop(bot: commands.Bot):
                     continue
 
                 try:
-                    questions = await fetch_questions_from_source(r["qotd_source_url"])
+                    questions = await fetch_qotd_questions_from_sheet(today)
                 except Exception:
                     continue
                 if not questions:
                     continue
+
                 recent = await qotd_recent_hashes(guild_id, limit=300)
                 pick = None
                 for q in questions:
@@ -1675,16 +1690,17 @@ async def qotd_daily_loop(bot: commands.Bot):
                         pick = q
                         break
                 if pick is None:
-                    pick = questions[0]  # fall back
+                    pick = questions[0]
 
-                prefix = r["qotd_message_prefix"] or "❓ **Question of the Day**"
+                prefix = "❓ **Question of the Day**"
                 role_ping = ""
                 if r["qotd_role_id"]:
                     role = guild.get_role(int(r["qotd_role_id"]))
                     if role:
                         role_ping = role.mention + " "
+
                 try:
-                    await channel.send(f"{role_ping}{prefix}\n{pick}")
+                    await channel.send(f"{role_ping}{prefix}\\n{pick}")
                     await qotd_record_post(guild_id, today, pick)
                     last_seen[guild_id] = today
                 except Exception:
@@ -1924,18 +1940,27 @@ async def welcome_set(guild_id: int, channel_id: int | None, text: str | None, m
         )
 
 # -------- QOTD --------
-async def qotd_set(guild_id: int, channel_id: int | None, role_id: int | None, prefix: str | None, source_url: str | None) -> None:
+async def qotd_set(guild_id: int, channel_id: int | None, role_id: int | None) -> None:
     async with db_pool.acquire() as conn:
         await ensure_guild_row(guild_id)
         await conn.execute(
             """UPDATE guild_settings SET
                 qotd_channel_id=COALESCE($2,qotd_channel_id),
                 qotd_role_id=COALESCE($3,qotd_role_id),
-                qotd_message_prefix=COALESCE($4,qotd_message_prefix),
-                qotd_source_url=COALESCE($5,qotd_source_url),
                 updated_at=NOW()
               WHERE guild_id=$1;""",
-            guild_id, channel_id, role_id, prefix, source_url
+            guild_id, channel_id, role_id
+        )
+
+async def qotd_set_enabled(guild_id: int, enabled: bool) -> None:
+    async with db_pool.acquire() as conn:
+        await ensure_guild_row(guild_id)
+        await conn.execute(
+            """UPDATE guild_settings SET
+                qotd_enabled=$2,
+                updated_at=NOW()
+              WHERE guild_id=$1;""",
+            guild_id, enabled
         )
 
 async def qotd_record_post(guild_id: int, posted_on: date, question_text: str) -> None:
@@ -1957,23 +1982,41 @@ async def qotd_recent_hashes(guild_id: int, limit: int = 200) -> set[str]:
         rows = await conn.fetch("SELECT question_hash FROM qotd_history WHERE guild_id=$1 ORDER BY posted_on DESC LIMIT $2;", guild_id, limit)
     return {r["question_hash"] for r in rows}
 
-async def fetch_questions_from_source(source_url: str) -> list[str]:
-    # Supports: (1) raw text with one question per line, or (2) CSV with first column 'question'
+def qotd_season_tab(d: date) -> str:
+    # Seasonal windows use the guild's local date (not UTC)
+    # Fall: Oct 1 -> Nov 30
+    # Christmas: Dec 1 -> Dec 31
+    if d.month == 12:
+        return QOTD_TAB_CHRISTMAS
+    if d.month in (10, 11):
+        return QOTD_TAB_FALL
+    return QOTD_TAB_REGULAR
+
+async def fetch_qotd_questions_from_sheet(local_day: date) -> list[str]:
+    # Reads Google Sheet tab based on season and returns column B (skipping header row)
+    if not QOTD_SHEET_ID:
+        return []
+    tab = qotd_season_tab(local_day)
+    url = f"https://docs.google.com/spreadsheets/d/{QOTD_SHEET_ID}/gviz/tq?tqx=out:csv&sheet={quote(tab)}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(source_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
             resp.raise_for_status()
             txt = await resp.text()
-    # basic CSV detection
-    if "," in txt.splitlines()[0]:
-        out=[]
-        for line in txt.splitlines()[1:]:
-            if not line.strip():
-                continue
-            q=line.split(",")[0].strip().strip('"')
-            if q:
-                out.append(q)
-        return out
-    return [l.strip() for l in txt.splitlines() if l.strip()]
+
+    import io
+    rows = list(csv.reader(io.StringIO(txt)))
+    if not rows:
+        return []
+    out: list[str] = []
+    # Skip header row (row 0). Column B is index 1.
+    for r in rows[1:]:
+        if len(r) < 2:
+            continue
+        q = (r[1] or "").strip()
+        if q:
+            out.append(q)
+    return out
+
 
 def format_template(t: str, user: discord.abc.User) -> str:
     return (t or "").replace("{user}", user.mention).replace("{name}", user.display_name)
@@ -2679,12 +2722,44 @@ async def birthday_manual_announce_cmd(interaction: discord.Interaction):
 qotd_group = discord.app_commands.Group(name="qotd", description="Question of the Day")
 
 @discord.app_commands.default_permissions(manage_guild=True)
+@qotd_group.command(name="enable", description="Enable QOTD (posts daily at 9am server time)")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def qotd_enable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+
+    if not QOTD_SHEET_ID:
+        return await interaction.response.send_message(
+            "❌ QOTD_SHEET_ID is not set in Railway variables.",
+            ephemeral=True,
+        )
+
+    s = await get_guild_extras(guild_id)
+    if not s.get("qotd_channel_id"):
+        return await interaction.response.send_message(
+            "❌ Set a QOTD channel first with /qotd set_channel",
+            ephemeral=True,
+        )
+
+    await qotd_set_enabled(guild_id, True)
+    await interaction.response.send_message("✅ QOTD enabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@qotd_group.command(name="disable", description="Disable QOTD")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def qotd_disable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await qotd_set_enabled(guild_id, False)
+    await interaction.response.send_message("🚫 QOTD disabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
 @qotd_group.command(name="set_channel", description="Set the QOTD channel")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def qotd_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
     guild_id = require_guild(interaction)
-    await qotd_set(guild_id, int(channel.id), None, None, None)
+    await qotd_set(guild_id, int(channel.id), None)
     await interaction.response.send_message(f"✅ QOTD channel set to {channel.mention}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
@@ -2693,62 +2768,8 @@ async def qotd_set_channel_cmd(interaction: discord.Interaction, channel: discor
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def qotd_set_role_cmd(interaction: discord.Interaction, role: discord.Role | None = None):
     guild_id = require_guild(interaction)
-    await qotd_set(guild_id, None, int(role.id) if role else None, None, None)
+    await qotd_set(guild_id, None, int(role.id) if role else None)
     await interaction.response.send_message("✅ QOTD role updated", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="set_source", description="Set the QOTD source URL")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_set_source_cmd(interaction: discord.Interaction, url: str):
-    guild_id = require_guild(interaction)
-    await qotd_set(guild_id, None, None, None, url)
-    await interaction.response.send_message("✅ QOTD source updated", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="set_prefix", description="Set the QOTD prefix line")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_set_prefix_cmd(interaction: discord.Interaction, text: str):
-    guild_id = require_guild(interaction)
-    await qotd_set(guild_id, None, None, text, None)
-    await interaction.response.send_message("✅ QOTD prefix updated", ephemeral=True)
-
-@discord.app_commands.default_permissions(manage_guild=True)
-@qotd_group.command(name="post_now", description="Admin: post QOTD now")
-@discord.app_commands.checks.cooldown(rate=1, per=60.0)
-@discord.app_commands.checks.has_permissions(manage_guild=True)
-async def qotd_post_now_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    s = await get_guild_extras(guild_id)
-    if not s.get("qotd_channel_id") or not s.get("qotd_source_url"):
-        return await interaction.response.send_message("❌ Set qotd channel + source first.", ephemeral=True)
-    guild = interaction.guild
-    channel = guild.get_channel(int(s["qotd_channel_id"]))
-    if not channel:
-        return await interaction.response.send_message("❌ QOTD channel not found.", ephemeral=True)
-    try:
-        questions = await fetch_questions_from_source(s["qotd_source_url"])
-        recent = await qotd_recent_hashes(guild_id, limit=300)
-        pick = None
-        for q in questions:
-            if _hash_question(q) not in recent:
-                pick=q; break
-        if pick is None:
-            pick = questions[0] if questions else None
-        if not pick:
-            return await interaction.response.send_message("❌ No questions found at source.", ephemeral=True)
-        role_ping = ""
-        if s.get("qotd_role_id"):
-            role = guild.get_role(int(s["qotd_role_id"]))
-            if role:
-                role_ping = role.mention + " "
-        prefix = s.get("qotd_message_prefix") or "❓ **Question of the Day**"
-        await channel.send(f"{role_ping}{prefix}\n{pick}")
-        await qotd_record_post(guild_id, guild_now(s.get("timezone") or "America/Los_Angeles").date(), pick)
-        await interaction.response.send_message("✅ Posted QOTD.", ephemeral=True)
-    except Exception:
-        await interaction.response.send_message("❌ Failed to post QOTD (check source URL).", ephemeral=True)
 
 # ---- Sticky ----
 sticky_group = discord.app_commands.Group(name="sticky", description="Sticky messages")
