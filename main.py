@@ -1054,6 +1054,24 @@ async def prize_set_enabled(guild_id: int, enabled: bool) -> None:
             enabled,
         )
 
+async def prize_set_drop_channel(guild_id: int, channel_id: int | None) -> None:
+    await ensure_guild_row(guild_id)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE guild_settings SET prize_drop_channel_id=$2, updated_at=NOW() WHERE guild_id=$1;",
+            guild_id,
+            channel_id,
+        )
+
+async def prize_set_winner_announce_channel(guild_id: int, channel_id: int | None) -> None:
+    await ensure_guild_row(guild_id)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE guild_settings SET winner_announce_channel_id=$2, updated_at=NOW() WHERE guild_id=$1;",
+            guild_id,
+            channel_id,
+        )
+
 async def prize_add_definition(guild_id: int, title: str, description: str | None, image_url: str | None) -> uuid.UUID:
     pid = uuid.uuid4()
     async with db_pool.acquire() as conn:
@@ -2235,72 +2253,98 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
 
 ############### COMMAND GROUPS ###############
-@bot.tree.command(name="test_all", description="Run a full system test for this server")
-async def test_all(interaction: discord.Interaction):
+@bot.tree.command(name="system", description="System utilities")
+async def system_cmd(
+    interaction: discord.Interaction,
+    ping: bool | None = None,
+    test_all: bool | None = None,
+):
+    used = _count_set(ping=ping, test_all=test_all)
+    ok = await _require_one_action(interaction, used, "Example: `/system ping:true` or `/system test_all:true`")
+    if not ok:
+        return
+
+    if used[0] == "ping":
+        await interaction.response.send_message("pong ✅", ephemeral=True)
+        return
+
     title, lines = await run_test_all(interaction)
     embed = discord.Embed(title=title, description="\n".join(lines))
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="ping", description="Bot heartbeat")
-async def ping(interaction: discord.Interaction):
-    await interaction.response.send_message("pong ✅")
 
-active_group = discord.app_commands.Group(name="active", description="Activity Tracking settings")
-
-@active_group.command(name="set_role", description="Set the Active Member role")
-async def active_set_role(interaction: discord.Interaction, role: discord.Role):
+@bot.tree.command(name="active", description="Activity Tracking settings")
+@discord.app_commands.choices(set_threshold=ACTIVE_THRESHOLD_CHOICES, set_mode=ACTIVE_MODE_CHOICES)
+async def active_cmd(
+    interaction: discord.Interaction,
+    add_channel: discord.TextChannel | None = None,
+    remove_channel: discord.TextChannel | None = None,
+    set_role: discord.Role | None = None,
+    clear_role: bool | None = None,
+    set_threshold: discord.app_commands.Choice[int] | None = None,
+    set_mode: discord.app_commands.Choice[str] | None = None,
+    list_channels: bool | None = None,
+    show_active: bool | None = None,
+):
     guild_id = require_guild(interaction)
-    await set_active_role(guild_id, int(role.id))
-    await interaction.response.send_message(f"✅ Active role set to {role.mention}", ephemeral=True)
-
-@active_group.command(name="clear_role", description="Clear the Active Member role")
-async def active_clear_role(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await set_active_role(guild_id, None)
-    await interaction.response.send_message("✅ Active role cleared", ephemeral=True)
-
-@active_group.command(name="set_threshold", description="Set inactivity threshold")
-@discord.app_commands.choices(minutes=ACTIVE_THRESHOLD_CHOICES)
-async def active_set_threshold(interaction: discord.Interaction, minutes: discord.app_commands.Choice[int]):
-    guild_id = require_guild(interaction)
-    await set_active_threshold(guild_id, minutes.value)
-    await interaction.response.send_message(f"✅ Active threshold set to {minutes.value} minute(s)", ephemeral=True)
-
-@active_group.command(name="set_mode", description="Set activity mode")
-@discord.app_commands.choices(mode=ACTIVE_MODE_CHOICES)
-async def active_set_mode(interaction: discord.Interaction, mode: discord.app_commands.Choice[str]):
-    guild_id = require_guild(interaction)
-    await set_active_mode(guild_id, mode.value)
-    await interaction.response.send_message(f"✅ Activity mode set to `{mode.value}`", ephemeral=True)
-
-@active_group.command(name="add_channel", description="Add a channel to count activity (channels mode)")
-async def active_add_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    guild_id = require_guild(interaction)
-    await add_activity_channel(guild_id, int(channel.id))
-    await interaction.response.send_message(f"✅ Added {channel.mention} to activity channels", ephemeral=True)
-
-@active_group.command(name="remove_channel", description="Remove a channel from activity channels")
-async def active_remove_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    guild_id = require_guild(interaction)
-    await remove_activity_channel(guild_id, int(channel.id))
-    await interaction.response.send_message(f"✅ Removed {channel.mention} from activity channels", ephemeral=True)
-
-@active_group.command(name="list_channels", description="List activity channels (channels mode)")
-async def active_list_channels_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    ids = await list_activity_channels(guild_id)
-    if not ids:
-        await interaction.response.send_message("No activity channels set.", ephemeral=True)
+    used = _count_set(
+        add_channel=add_channel,
+        remove_channel=remove_channel,
+        set_role=set_role,
+        clear_role=clear_role,
+        set_threshold=set_threshold,
+        set_mode=set_mode,
+        list_channels=list_channels,
+        show_active=show_active,
+    )
+    ok = await _require_one_action(interaction, used, "Example: `/active set_role:@Active` or `/active add_channel:#general`")
+    if not ok:
         return
-    mentions = []
-    for cid in ids:
-        ch = interaction.guild.get_channel(cid) if interaction.guild else None
-        mentions.append(ch.mention if ch else f"`{cid}`")
-    await interaction.response.send_message("Activity channels:\n" + "\n".join(mentions), ephemeral=True)
+    action = used[0]
 
-@active_group.command(name="show", description="Show current Activity Tracking settings")
-async def active_show(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
+    if action == "set_role":
+        await set_active_role(guild_id, int(set_role.id))
+        await interaction.response.send_message(f"✅ Active role set to {set_role.mention}", ephemeral=True)
+        return
+
+    if action == "clear_role":
+        await set_active_role(guild_id, None)
+        await interaction.response.send_message("✅ Active role cleared", ephemeral=True)
+        return
+
+    if action == "set_threshold":
+        await set_active_threshold(guild_id, int(set_threshold.value))
+        await interaction.response.send_message(f"✅ Active threshold set to {set_threshold.value} minute(s)", ephemeral=True)
+        return
+
+    if action == "set_mode":
+        await set_active_mode(guild_id, str(set_mode.value))
+        await interaction.response.send_message(f"✅ Activity mode set to `{set_mode.value}`", ephemeral=True)
+        return
+
+    if action == "add_channel":
+        await add_activity_channel(guild_id, int(add_channel.id))
+        await interaction.response.send_message(f"✅ Added {add_channel.mention} to activity channels", ephemeral=True)
+        return
+
+    if action == "remove_channel":
+        await remove_activity_channel(guild_id, int(remove_channel.id))
+        await interaction.response.send_message(f"✅ Removed {remove_channel.mention} from activity channels", ephemeral=True)
+        return
+
+    if action == "list_channels":
+        ids = await list_activity_channels(guild_id)
+        if not ids:
+            await interaction.response.send_message("No activity channels set.", ephemeral=True)
+            return
+        mentions = []
+        for cid in ids:
+            ch = interaction.guild.get_channel(cid) if interaction.guild else None
+            mentions.append(ch.mention if ch else f"`{cid}`")
+        await interaction.response.send_message("Activity channels:\n" + "\n".join(mentions), ephemeral=True)
+        return
+
+    # show_active
     s = await get_guild_settings(guild_id)
     await interaction.response.send_message(
         f"Mode: `{s['active_mode']}`\nThreshold: `{s['active_threshold_minutes']}` minute(s)\nActive role ID: `{s['active_role_id']}`",
@@ -2554,18 +2598,24 @@ async def prizes_remove_schedule_cmd(interaction: discord.Interaction, schedule_
     await prize_schedule_remove(guild_id, sid)
     await interaction.response.send_message("✅ Schedule removed.", ephemeral=True)
 
-timezone_group = discord.app_commands.Group(name="timezone", description="Timezone settings")
-
-@timezone_group.command(name="set", description="Set this server's timezone")
-@discord.app_commands.autocomplete(tz=timezone_autocomplete)
-async def tz_set(interaction: discord.Interaction, tz: str):
+@bot.tree.command(name="timezone", description="Timezone settings")
+@discord.app_commands.autocomplete(set=timezone_autocomplete)
+async def timezone_cmd(
+    interaction: discord.Interaction,
+    set: str | None = None,
+    show: bool | None = None,
+):
     guild_id = require_guild(interaction)
-    await upsert_timezone(guild_id, tz)
-    await interaction.response.send_message(f"✅ Timezone set to `{tz}`", ephemeral=True)
+    used = _count_set(set=set, show=show)
+    ok = await _require_one_action(interaction, used, "Example: `/timezone set:America/Los_Angeles` or `/timezone show:true`")
+    if not ok:
+        return
 
-@timezone_group.command(name="show", description="Show this server's timezone")
-async def tz_show(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
+    if used[0] == "set":
+        await upsert_timezone(guild_id, set)
+        await interaction.response.send_message(f"✅ Timezone set to `{set}`", ephemeral=True)
+        return
+
     s = await get_guild_settings(guild_id)
     await interaction.response.send_message(f"⏰ Current timezone: `{s['timezone']}`", ephemeral=True)
 
@@ -3072,63 +3122,116 @@ async def plague_config_cmd(
 # ---- Prize ----
 prize_group2 = discord.app_commands.Group(name="prize", description="Prize system")
 
-@prize_group2.command(name="schedule", description="Schedule a prize drop (YYYY-MM-DD)")
-@discord.app_commands.autocomplete(prize_id=prize_autocomplete)
+@prize_group2.command(name="schedule", description="Prize schedule actions")
+@discord.app_commands.autocomplete(select_prize=prize_autocomplete, cancel_prize=schedule_autocomplete)
 @discord.app_commands.choices(not_before=PRIZE_TIME_CHOICES)
-async def prize_schedule_cmd2(interaction: discord.Interaction, day: str, prize_id: str, channel: discord.TextChannel, not_before: discord.app_commands.Choice[str]):
+async def prize_schedule_cmd2(
+    interaction: discord.Interaction,
+    set_month: int | None = None,
+    set_day: int | None = None,
+    select_prize: str | None = None,
+    channel: discord.TextChannel | None = None,
+    not_before: discord.app_commands.Choice[str] | None = None,
+    schedule_list: bool | None = None,
+    cancel_prize: str | None = None,
+):
+    """Single-entry schedule command (option-input style)."""
     guild_id = require_guild(interaction)
+    used = _count_set(
+        set_month=set_month,
+        set_day=set_day,
+        select_prize=select_prize,
+        schedule_list=schedule_list,
+        cancel_prize=cancel_prize,
+    )
+    ok = await _require_one_action(
+        interaction,
+        used,
+        "Examples: `/prize schedule schedule_list:true` or `/prize schedule cancel_prize:<select>` or `/prize schedule select_prize:<pick> set_month:1 set_day:15 channel:#general`",
+    )
+    if not ok:
+        return
+
+    action = used[0]
+
+    if action == "schedule_list":
+        settings = await get_guild_settings(guild_id)
+        local_now = guild_now(settings["timezone"])
+        scheds = await prize_schedule_list_upcoming(guild_id, local_now.date(), limit=25)
+        if not scheds:
+            return await interaction.response.send_message("No upcoming schedules.", ephemeral=True)
+        lines = []
+        for s in scheds:
+            nbt = s["not_before_time"].strftime("%H:%M") if s["not_before_time"] else "Any"
+            ch = interaction.guild.get_channel(int(s["channel_id"])) if interaction.guild else None
+            chs = ch.mention if ch else f"`{s['channel_id']}`"
+            lines.append(f"`{s['schedule_id']}` — {s['day'].isoformat()} @ {nbt} in {chs} (used: {s['used']})")
+        return await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    if action == "cancel_prize":
+        try:
+            sid = uuid.UUID(cancel_prize)
+        except Exception:
+            return await interaction.response.send_message("❌ Invalid schedule id.", ephemeral=True)
+        await prize_schedule_remove(guild_id, sid)
+        return await interaction.response.send_message("✅ Schedule removed.", ephemeral=True)
+
+    if action in ("set_month", "set_day"):
+        # These are kept as inputs (as requested) but we don't store state between invocations.
+        return await interaction.response.send_message(
+            "ℹ️ `set_month` and `set_day` are used together with `select_prize` in the same command.\n"
+            "Example: `/prize schedule select_prize:<pick> set_month:1 set_day:15 channel:#general`",
+            ephemeral=True,
+        )
+
+    # select_prize
+    if set_month is None or set_day is None:
+        return await interaction.response.send_message("❌ For `select_prize`, you must also provide `set_month` and `set_day`.", ephemeral=True)
+    if channel is None:
+        return await interaction.response.send_message("❌ For `select_prize`, you must provide `channel`.", ephemeral=True)
+
+    settings = await get_guild_settings(guild_id)
+    tzname = settings.get("timezone") or "America/Los_Angeles"
+    now_local = guild_now(tzname)
     try:
-        d = parse_date_yyyy_mm_dd(day)
+        d = date(int(now_local.year), int(set_month), int(set_day))
     except Exception:
-        return await interaction.response.send_message("❌ Date must be YYYY-MM-DD", ephemeral=True)
+        return await interaction.response.send_message("❌ Invalid month/day.", ephemeral=True)
+
     try:
-        pid = uuid.UUID(prize_id)
+        pid = uuid.UUID(select_prize)
     except Exception:
         return await interaction.response.send_message("❌ Invalid prize id.", ephemeral=True)
-    t = parse_hh_mm(not_before.value)
+
+    t = parse_hh_mm(not_before.value) if (not_before and not_before.value) else None
     sid = await prize_schedule_add(guild_id, d, t, int(channel.id), pid)
     await interaction.response.send_message(f"✅ Scheduled.\nSchedule ID: `{sid}`", ephemeral=True)
-
-@prize_group2.command(name="schedule_list", description="List upcoming prize schedules")
-async def prize_schedule_list_cmd2(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    settings = await get_guild_settings(guild_id)
-    local_now = guild_now(settings["timezone"])
-    scheds = await prize_schedule_list_upcoming(guild_id, local_now.date(), limit=25)
-    if not scheds:
-        return await interaction.response.send_message("No upcoming schedules.", ephemeral=True)
-    lines = []
-    for s in scheds:
-        nbt = s["not_before_time"].strftime("%H:%M") if s["not_before_time"] else "Any"
-        ch = interaction.guild.get_channel(int(s["channel_id"])) if interaction.guild else None
-        chs = ch.mention if ch else f"`{s['channel_id']}`"
-        lines.append(f"`{s['schedule_id']}` — {s['day'].isoformat()} @ {nbt} in {chs} (used: {s['used']})")
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
-@prize_group2.command(name="schedule_delete", description="Delete a schedule (select from autocomplete)")
-@discord.app_commands.autocomplete(select=schedule_autocomplete)
-async def prize_schedule_delete_cmd2(interaction: discord.Interaction, select: str):
-    guild_id = require_guild(interaction)
-    try:
-        sid = uuid.UUID(select)
-    except Exception:
-        return await interaction.response.send_message("❌ Invalid schedule id.", ephemeral=True)
-    await prize_schedule_remove(guild_id, sid)
-    await interaction.response.send_message("✅ Schedule removed.", ephemeral=True)
 
 @prize_group2.command(name="config", description="Configure prizes (single command)")
 @discord.app_commands.choices(enable=BOOL_CHOICES)
 async def prize_config_cmd2(
     interaction: discord.Interaction,
     enable: discord.app_commands.Choice[int] | None = None,
+    prize_drop_channel: discord.TextChannel | None = None,
+    winner_announce_channel: discord.TextChannel | None = None,
     add_prize: str | None = None,
     remove_prize: str | None = None,
     description: str | None = None,
     image_url: str | None = None,
 ):
     guild_id = require_guild(interaction)
-    used = _count_set(enable=enable, add_prize=add_prize, remove_prize=remove_prize)
-    ok = await _require_one_action(interaction, used, "Example: `/prize config enable:Enabled` or `/prize config add_prize:\"Gift Card\"`")
+    used = _count_set(
+        enable=enable,
+        prize_drop_channel=prize_drop_channel,
+        winner_announce_channel=winner_announce_channel,
+        add_prize=add_prize,
+        remove_prize=remove_prize,
+    )
+    ok = await _require_one_action(
+        interaction,
+        used,
+        "Examples: `/prize config enable:Enabled` or `/prize config prize_drop_channel:#drops` or `/prize config add_prize:\"Gift Card\"`",
+    )
     if not ok:
         return
     action = used[0]
@@ -3136,6 +3239,16 @@ async def prize_config_cmd2(
     if action == "enable":
         await prize_set_enabled(guild_id, bool(enable.value))
         await interaction.response.send_message(f"✅ Prizes enabled set to `{bool(enable.value)}`", ephemeral=True)
+        return
+
+    if action == "prize_drop_channel":
+        await prize_set_drop_channel(guild_id, int(prize_drop_channel.id))
+        await interaction.response.send_message(f"✅ Prize drop channel set to {prize_drop_channel.mention}", ephemeral=True)
+        return
+
+    if action == "winner_announce_channel":
+        await prize_set_winner_announce_channel(guild_id, int(winner_announce_channel.id))
+        await interaction.response.send_message(f"✅ Winner announce channel set to {winner_announce_channel.mention}", ephemeral=True)
         return
 
     if action == "add_prize":
@@ -3362,10 +3475,6 @@ bot.tree.add_command(join_group2)
 bot.tree.add_command(voice_group2)
 bot.tree.add_command(status_group2)
 
-bot.tree.add_command(active_group)
-
-
-bot.tree.add_command(timezone_group)
 
 
 ############### ON_READY & BOT START ###############
