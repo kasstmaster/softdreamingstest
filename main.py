@@ -60,23 +60,6 @@ BOOL_CHOICES = [
     discord.app_commands.Choice(name="Disabled", value=0),
 ]
 
-MONTH_CHOICES = [
-    discord.app_commands.Choice(name="January", value=1),
-    discord.app_commands.Choice(name="February", value=2),
-    discord.app_commands.Choice(name="March", value=3),
-    discord.app_commands.Choice(name="April", value=4),
-    discord.app_commands.Choice(name="May", value=5),
-    discord.app_commands.Choice(name="June", value=6),
-    discord.app_commands.Choice(name="July", value=7),
-    discord.app_commands.Choice(name="August", value=8),
-    discord.app_commands.Choice(name="September", value=9),
-    discord.app_commands.Choice(name="October", value=10),
-    discord.app_commands.Choice(name="November", value=11),
-    discord.app_commands.Choice(name="December", value=12),
-]
-
-DAY_CHOICES = [discord.app_commands.Choice(name=str(i), value=i) for i in range(1, 32)]
-
 PRIZE_TIME_CHOICES = [
     discord.app_commands.Choice(name="Any time", value=""),
     discord.app_commands.Choice(name="08:00", value="08:00"),
@@ -118,6 +101,7 @@ CREATE TABLE IF NOT EXISTS guild_settings (
 SCHEMA_ALTERS_SQL = """
 ALTER TABLE guild_settings
   ADD COLUMN IF NOT EXISTS active_mode TEXT NOT NULL DEFAULT 'all',
+  ADD COLUMN IF NOT EXISTS birthday_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS birthday_role_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS birthday_channel_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS birthday_message_text TEXT NOT NULL DEFAULT '🎉 Happy Birthday {user}! 🎂',
@@ -130,9 +114,13 @@ ALTER TABLE guild_settings
   ADD COLUMN IF NOT EXISTS qotd_last_posted_date DATE NULL,
   ADD COLUMN IF NOT EXISTS welcome_channel_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS welcome_message_text TEXT NOT NULL DEFAULT 'Welcome to the server, {user}! 👋',
+  ADD COLUMN IF NOT EXISTS welcome_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS member_role_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS member_role_delay_seconds INT NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS bot_role_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS plague_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS plague_scheduled_day DATE NULL,
+  ADD COLUMN IF NOT EXISTS logging_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS modlog_channel_id BIGINT NULL;
 """
 
@@ -551,7 +539,7 @@ async def get_guild_settings(guild_id: int) -> dict:
             """
             SELECT active_role_id, active_threshold_minutes, active_mode,
                    deadchat_role_id, deadchat_idle_minutes, deadchat_requires_active, deadchat_cooldown_minutes,
-                   plague_role_id, plague_duration_hours,
+                   plague_role_id, plague_duration_hours, plague_enabled, plague_scheduled_day,
                    prizes_enabled,
                    timezone
             FROM guild_settings
@@ -944,6 +932,35 @@ async def plague_set_duration(guild_id: int, hours: int) -> None:
             hours,
         )
 
+
+async def plague_set_enabled(guild_id: int, enabled: bool) -> None:
+    await ensure_guild_row(guild_id)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO guild_settings (guild_id, plague_enabled, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (guild_id)
+            DO UPDATE SET plague_enabled = EXCLUDED.plague_enabled, updated_at = NOW();
+            """,
+            guild_id,
+            enabled,
+        )
+
+async def plague_set_scheduled_day(guild_id: int, day: date | None) -> None:
+    await ensure_guild_row(guild_id)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO guild_settings (guild_id, plague_scheduled_day, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (guild_id)
+            DO UPDATE SET plague_scheduled_day = EXCLUDED.plague_scheduled_day, updated_at = NOW();
+            """,
+            guild_id,
+            day,
+        )
+
 async def plague_add_day(guild_id: int, day: date) -> None:
     async with db_pool.acquire() as conn:
         await conn.execute(
@@ -1311,30 +1328,57 @@ async def deadchat_attempt_award(bot: commands.Bot, message: discord.Message) ->
         await maybe_trigger_plague(message.guild, int(message.author.id), channel_id)
         await maybe_trigger_prize_drop(message.guild, int(message.author.id))
 
+
 async def maybe_trigger_plague(guild: discord.Guild, winner_user_id: int, source_channel_id: int) -> None:
     settings = await get_guild_settings(int(guild.id))
-    role_id = settings["plague_role_id"]
+
+    # Feature must be enabled and scheduled
+    if not settings.get("plague_enabled"):
+        return
+    scheduled_day = settings.get("plague_scheduled_day")
+    if not scheduled_day:
+        return
+
+    # Plague day is evaluated in UTC, and only triggers after 12:00 UTC
+    utc_now = now_utc()
+    if utc_now.date() != scheduled_day:
+        return
+    if utc_now.hour < 12:
+        return
+
+    # Only trigger once per day (restart-safe)
+    if await plague_daily_already_triggered(int(guild.id), scheduled_day):
+        return
+
+    role_id = settings.get("plague_role_id")
     if not role_id:
         return
-    local_now = guild_now(settings["timezone"])
-    today = local_now.date()
-    if not await plague_is_day(int(guild.id), today):
-        return
-    if await plague_daily_already_triggered(int(guild.id), today):
-        return
+
     member = guild.get_member(winner_user_id)
     if member is None:
         return
     role = guild.get_role(int(role_id))
     if role is None:
         return
-    expires_at = now_utc() + timedelta(hours=int(settings["plague_duration_hours"]))
+
+    expires_at = utc_now + timedelta(days=3)
+
     try:
-        await member.add_roles(role, reason="Plague: first Dead Chat winner on plague day")
+        await member.add_roles(role, reason="Plague Day: first Dead Chat winner after 12:00 UTC")
     except Exception:
         return
+
+    # Persist infection + mark consumed for the day
     await plague_add_infection(int(guild.id), winner_user_id, expires_at, source_channel_id)
-    await plague_mark_triggered(int(guild.id), today, winner_user_id)
+    await plague_mark_triggered(int(guild.id), scheduled_day, winner_user_id)
+
+    # Announce in the same Dead Chat channel (silent expiry later)
+    channel = guild.get_channel(int(source_channel_id))
+    if channel:
+        try:
+            await channel.send(f"☣️ **Plague Day!** {member.mention} has been infected for **3 days**.")
+        except Exception:
+            pass
 
 async def maybe_trigger_prize_drop(guild: discord.Guild, winner_user_id: int) -> None:
     settings = await get_guild_settings(int(guild.id))
@@ -1495,7 +1539,7 @@ async def birthday_daily_loop(bot: commands.Bot):
     while not bot.is_closed():
         try:
             async with db_pool.acquire() as conn:
-                rows = await conn.fetch("SELECT guild_id, timezone, birthday_role_id, birthday_channel_id, birthday_message_text FROM guild_settings;")
+                rows = await conn.fetch("SELECT guild_id, timezone, birthday_enabled, birthday_role_id, birthday_channel_id, birthday_message_text FROM guild_settings;")
             for r in rows:
                 guild_id = int(r["guild_id"])
                 tz = r["timezone"] or "America/Los_Angeles"
@@ -1506,6 +1550,11 @@ async def birthday_daily_loop(bot: commands.Bot):
 
                 guild = bot.get_guild(guild_id)
                 if guild is None:
+                    continue
+
+                if not r.get("birthday_enabled"):
+                    continue
+                if not r.get("birthday_role_id") or not r.get("birthday_channel_id"):
                     continue
 
                 # remove birthday role from anyone who has it but isn't birthday today
@@ -1702,8 +1751,8 @@ async def get_guild_extras(guild_id: int) -> dict:
             birthday_role_id, birthday_channel_id, birthday_message_text,
             birthday_list_channel_id, birthday_list_message_id,
             qotd_channel_id, qotd_role_id, qotd_message_prefix, qotd_source_url, qotd_last_posted_date,
-            welcome_channel_id, welcome_message_text, member_role_id, member_role_delay_seconds, bot_role_id,
-            modlog_channel_id, timezone
+            welcome_channel_id, welcome_message_text, welcome_enabled, member_role_id, member_role_delay_seconds, bot_role_id,
+            logging_enabled, modlog_channel_id, timezone
           FROM guild_settings WHERE guild_id=$1""", guild_id)
     if not row:
         return {}
@@ -1758,6 +1807,16 @@ async def birthday_set_role_channel_message(guild_id: int, role_id: int | None, 
                  WHERE guild_id=$1;""",
             guild_id, role_id, channel_id, message_text
         )
+
+
+async def birthday_set_enabled(guild_id: int, enabled: bool) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE guild_settings SET birthday_enabled=$2 WHERE guild_id=$1;",
+            int(guild_id),
+            bool(enabled),
+        )
+
 
 async def birthday_set_list_message(guild_id: int, channel_id: int | None, message_id: int | None) -> None:
     async with db_pool.acquire() as conn:
@@ -1850,6 +1909,23 @@ async def voice_role_get_link(guild_id: int, voice_channel_id: int):
         return await conn.fetchrow("SELECT role_id,mode FROM voice_role_links WHERE guild_id=$1 AND voice_channel_id=$2;", guild_id, voice_channel_id)
 
 # -------- Welcome / Modlog --------
+
+async def set_modlog_channel(guild_id: int, channel_id: int | None) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE guild_settings SET modlog_channel_id=$2, updated_at=NOW() WHERE guild_id=$1",
+            guild_id,
+            channel_id,
+        )
+
+async def set_logging_enabled(guild_id: int, enabled: bool) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE guild_settings SET logging_enabled=$2, updated_at=NOW() WHERE guild_id=$1",
+            guild_id,
+            enabled,
+        )
+
 async def welcome_set(guild_id: int, channel_id: int | None, text: str | None, member_role_id: int | None, delay_seconds: int | None, bot_role_id: int | None, modlog_channel_id: int | None) -> None:
     async with db_pool.acquire() as conn:
         await ensure_guild_row(guild_id)
@@ -1864,6 +1940,24 @@ async def welcome_set(guild_id: int, channel_id: int | None, text: str | None, m
                 updated_at=NOW()
               WHERE guild_id=$1;""",
             guild_id, channel_id, text, member_role_id, delay_seconds, bot_role_id, modlog_channel_id
+        )
+
+
+
+async def welcome_set_enabled(guild_id: int, enabled: bool) -> None:
+    async with db_pool.acquire() as conn:
+        await ensure_guild_row(guild_id)
+        await conn.execute(
+            "UPDATE guild_settings SET welcome_enabled=$2, updated_at=NOW() WHERE guild_id=$1;",
+            guild_id, bool(enabled)
+        )
+
+async def welcome_set_message(guild_id: int, text: str) -> None:
+    async with db_pool.acquire() as conn:
+        await ensure_guild_row(guild_id)
+        await conn.execute(
+            "UPDATE guild_settings SET welcome_message_text=$2, updated_at=NOW() WHERE guild_id=$1;",
+            guild_id, text
         )
 
 # -------- QOTD --------
@@ -2019,7 +2113,7 @@ async def on_member_join(member: discord.Member):
                 asyncio.create_task(_add_later())
 
         # Welcome message
-        if s.get("welcome_channel_id"):
+        if s.get("welcome_enabled") and s.get("welcome_channel_id"):
             ch = member.guild.get_channel(int(s["welcome_channel_id"]))
             if ch:
                 txt = s.get("welcome_message_text") or "Welcome to the server, {user}! 👋"
@@ -2029,7 +2123,7 @@ async def on_member_join(member: discord.Member):
                     pass
 
         # Log join
-        if s.get("modlog_channel_id"):
+        if s.get("logging_enabled") and s.get("modlog_channel_id"):
             ch = member.guild.get_channel(int(s["modlog_channel_id"]))
             if ch:
                 try:
@@ -2046,7 +2140,7 @@ async def on_member_remove(member: discord.Member):
     guild_id = int(member.guild.id)
     try:
         s = await get_guild_extras(guild_id)
-        if not s.get("modlog_channel_id"):
+        if (not s.get("logging_enabled")) or (not s.get("modlog_channel_id")):
             return
         ch = member.guild.get_channel(int(s["modlog_channel_id"]))
         if not ch:
@@ -2075,7 +2169,7 @@ async def on_member_remove(member: discord.Member):
 async def on_member_ban(guild: discord.Guild, user: discord.User):
     try:
         s = await get_guild_extras(int(guild.id))
-        if not s.get("modlog_channel_id"):
+        if (not s.get("logging_enabled")) or (not s.get("modlog_channel_id")):
             return
         ch = guild.get_channel(int(s["modlog_channel_id"]))
         if not ch:
@@ -2299,57 +2393,71 @@ async def deadchat_show_cmd(interaction: discord.Interaction):
         ephemeral=True,
     )
 
-plague_group = discord.app_commands.Group(name="plague", description="Plague settings")
 
+plague_group = discord.app_commands.Group(name="plague", description="Plague Day settings")
+
+@discord.app_commands.default_permissions(manage_guild=True)
 @plague_group.command(name="set_role", description="Set the Plague role")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 async def plague_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
     guild_id = require_guild(interaction)
     await plague_set_role(guild_id, int(role.id))
     await interaction.response.send_message(f"✅ Plague role set to {role.mention}", ephemeral=True)
 
-@plague_group.command(name="clear_role", description="Clear the Plague role")
-async def plague_clear_role_cmd(interaction: discord.Interaction):
-    guild_id = require_guild(interaction)
-    await plague_set_role(guild_id, None)
-    await interaction.response.send_message("✅ Plague role cleared", ephemeral=True)
-
-@plague_group.command(name="set_duration", description="Set infection duration")
-@discord.app_commands.choices(hours=PLAGUE_DURATION_CHOICES)
-async def plague_set_duration_cmd(interaction: discord.Interaction, hours: discord.app_commands.Choice[int]):
-    guild_id = require_guild(interaction)
-    await plague_set_duration(guild_id, hours.value)
-    await interaction.response.send_message(f"✅ Plague duration set to {hours.value} hour(s)", ephemeral=True)
-
-@plague_group.command(name="add_day", description="Add a plague day (YYYY-MM-DD)")
-async def plague_add_day_cmd(interaction: discord.Interaction, day: str):
+@discord.app_commands.default_permissions(manage_guild=True)
+@plague_group.command(name="schedule", description="Schedule a Plague Day (YYYY-MM-DD)")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def plague_schedule_cmd(interaction: discord.Interaction, day: str):
     guild_id = require_guild(interaction)
     try:
         d = parse_date_yyyy_mm_dd(day)
     except Exception:
         await interaction.response.send_message("❌ Date must be YYYY-MM-DD", ephemeral=True)
         return
-    await plague_add_day(guild_id, d)
-    await interaction.response.send_message(f"✅ Plague day added: `{d.isoformat()}`", ephemeral=True)
 
-@plague_group.command(name="remove_day", description="Remove a plague day (YYYY-MM-DD)")
-async def plague_remove_day_cmd(interaction: discord.Interaction, day: str):
-    guild_id = require_guild(interaction)
-    try:
-        d = parse_date_yyyy_mm_dd(day)
-    except Exception:
-        await interaction.response.send_message("❌ Date must be YYYY-MM-DD", ephemeral=True)
-        return
-    await plague_remove_day(guild_id, d)
-    await interaction.response.send_message(f"✅ Plague day removed: `{d.isoformat()}`", ephemeral=True)
+    # Replace any previous schedule with this date
+    await plague_set_scheduled_day(guild_id, d)
 
-@plague_group.command(name="list_days", description="List plague days")
-async def plague_list_days_cmd(interaction: discord.Interaction):
+    # Allow this date to trigger again even if it was used in the past
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM plague_daily_state WHERE guild_id = $1 AND day = $2;", guild_id, d)
+
+    await interaction.response.send_message(f"✅ Plague Day scheduled for `{d.isoformat()}` (triggers after 12:00 UTC).", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@plague_group.command(name="enable", description="Enable Plague Day")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def plague_enable_cmd(interaction: discord.Interaction):
     guild_id = require_guild(interaction)
-    days = await plague_list_days(guild_id)
-    if not days:
-        await interaction.response.send_message("No plague days set.", ephemeral=True)
+    s = await get_guild_settings(guild_id)
+
+    missing = []
+    if not s.get("plague_role_id"):
+        missing.append("plague role")
+    if not s.get("plague_scheduled_day"):
+        missing.append("scheduled day")
+
+    if missing:
+        await interaction.response.send_message(
+            "❌ Can't enable Plague Day yet. Missing: " + ", ".join(missing) + ".",
+            ephemeral=True,
+        )
         return
-    await interaction.response.send_message("\n".join(d.isoformat() for d in days), ephemeral=True)
+
+    await plague_set_enabled(guild_id, True)
+    await interaction.response.send_message("✅ Plague Day enabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@plague_group.command(name="disable", description="Disable Plague Day")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def plague_disable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await plague_set_enabled(guild_id, False)
+    await interaction.response.send_message("✅ Plague Day disabled.", ephemeral=True)
 
 prizes_group = discord.app_commands.Group(name="prizes", description="Prize settings")
 
@@ -2489,16 +2597,55 @@ async def status_activity(interaction: discord.Interaction, user: discord.Member
 
 ############### NEW COMMAND GROUPS (BIRTHDAY / QOTD / STICKY / AUTODELETE / VOICE / WELCOME) ###############
 birthday_group = discord.app_commands.Group(name="birthday", description="Birthday system")
+birthday_config_group = discord.app_commands.Group(name="config", description="Birthday configuration", parent=birthday_group)
 
-@birthday_group.command(name="set", description="Set your birthday")
-@discord.app_commands.choices(month=MONTH_CHOICES, day=DAY_CHOICES)
-async def birthday_set_cmd(interaction: discord.Interaction, month: discord.app_commands.Choice[int], day: discord.app_commands.Choice[int]):
+# ----- USER COMMANDS -----
+
+@birthday_group.command(name="set", description="Set your birthday (MM/DD or MM/DD/YYYY)")
+async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: int, year: int | None = None):
     guild_id = require_guild(interaction)
-    await birthday_set(guild_id, int(interaction.user.id), month.value, day.value, None, int(interaction.user.id))
+    await birthday_set(guild_id, int(interaction.user.id), month, day, year, int(interaction.user.id))
     await update_birthday_list_message(bot, guild_id)
-    await interaction.response.send_message(f"✅ Birthday saved: {month.value:02d}/{day.value:02d}", ephemeral=True)
+    await interaction.response.send_message(f"✅ Birthday saved: {month:02d}/{day:02d}", ephemeral=True)
 
-@birthday_group.command(name="set_for", description="Admin: set another member's birthday")
+# ----- ADMIN / CONFIG COMMANDS -----
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_config_group.command(name="enable", description="Enable birthday announcements")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_enable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT birthday_role_id, birthday_channel_id FROM guild_settings WHERE guild_id=$1;",
+            int(guild_id),
+        )
+    missing = []
+    if not row or not row.get("birthday_role_id"):
+        missing.append("birthday role")
+    if not row or not row.get("birthday_channel_id"):
+        missing.append("birthday channel")
+    if missing:
+        return await interaction.response.send_message(
+            f"❌ Missing required settings: {', '.join(missing)}",
+            ephemeral=True,
+        )
+    await birthday_set_enabled(guild_id, True)
+    await interaction.response.send_message("✅ Birthday announcements enabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_config_group.command(name="disable", description="Disable birthday announcements")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_disable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await birthday_set_enabled(guild_id, False)
+    await interaction.response.send_message("🚫 Birthday announcements disabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_config_group.command(name="set_for", description="Admin: set another member's birthday")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_set_for_cmd(interaction: discord.Interaction, member: discord.Member, month: int, day: int, year: int | None = None):
     guild_id = require_guild(interaction)
@@ -2506,7 +2653,9 @@ async def birthday_set_for_cmd(interaction: discord.Interaction, member: discord
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message(f"✅ Birthday saved for {member.mention}: {month:02d}/{day:02d}", ephemeral=True)
 
-@birthday_group.command(name="remove", description="Admin: remove a member's birthday")
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_config_group.command(name="remove", description="Admin: remove a member's birthday")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_remove_cmd(interaction: discord.Interaction, member: discord.Member):
     guild_id = require_guild(interaction)
@@ -2515,7 +2664,7 @@ async def birthday_remove_cmd(interaction: discord.Interaction, member: discord.
     await interaction.response.send_message(f"✅ Removed birthday for {member.mention}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="set_role", description="Set the birthday role")
+@birthday_config_group.command(name="set_role", description="Set the birthday role")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
@@ -2524,7 +2673,7 @@ async def birthday_set_role_cmd(interaction: discord.Interaction, role: discord.
     await interaction.response.send_message(f"✅ Birthday role set to {role.mention}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="set_channel", description="Set the birthday announcement channel")
+@birthday_config_group.command(name="set_channel", description="Set the birthday announcement channel")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -2533,7 +2682,7 @@ async def birthday_set_channel_cmd(interaction: discord.Interaction, channel: di
     await interaction.response.send_message(f"✅ Birthday channel set to {channel.mention}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="set_message", description="Set the birthday message template (use {user})")
+@birthday_config_group.command(name="set_custom_message", description="Set the birthday message template (use {user})")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_set_message_cmd(interaction: discord.Interaction, text: str):
@@ -2542,7 +2691,7 @@ async def birthday_set_message_cmd(interaction: discord.Interaction, text: str):
     await interaction.response.send_message("✅ Birthday message updated", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="publish_list", description="Create or update a public birthday list message")
+@birthday_config_group.command(name="publish_list", description="Create or update a public birthday list message")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_publish_list_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -2554,61 +2703,16 @@ async def birthday_publish_list_cmd(interaction: discord.Interaction, channel: d
     await interaction.response.send_message(f"✅ Birthday list published in {channel.mention}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="announce", description="Admin: announce a specific member (today only)")
-@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@birthday_config_group.command(name="announce", description="Admin: manually announce birthdays for today")
+@discord.app_commands.checks.cooldown(rate=1, per=30.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_manual_announce_cmd(interaction: discord.Interaction, member: discord.Member):
+async def birthday_manual_announce_cmd(interaction: discord.Interaction):
     guild_id = require_guild(interaction)
-    settings = await get_guild_extras(guild_id)
-
-    # Ensure configured
-    ch_id = settings.get("birthday_channel_id")
-    if not ch_id:
-        await interaction.response.send_message("❌ Birthday channel not set. Use /birthday set_channel first.", ephemeral=True)
-        return
-
-    guild = interaction.guild
-    channel = guild.get_channel(int(ch_id)) if guild else None
-    if channel is None:
-        await interaction.response.send_message("❌ Birthday channel not found (maybe deleted). Set it again.", ephemeral=True)
-        return
-
-    b = await birthday_get(guild_id, int(member.id))
-    if not b:
-        await interaction.response.send_message(f"❌ {member.mention} does not have a birthday set.", ephemeral=True)
-        return
-
-    tz = settings.get("timezone") or "America/Los_Angeles"
-    today = guild_now(tz).date()
-    if int(b["month"]) != today.month or int(b["day"]) != today.day:
-        await interaction.response.send_message(
-            f"ℹ️ {member.mention}'s birthday is {int(b['month']):02d}/{int(b['day']):02d} (not today). No announcement sent.",
-            ephemeral=True,
-        )
-        return
-
-    msg_t = settings.get("birthday_message_text") or "🎉 Happy Birthday {user}! 🎂"
-    role = guild.get_role(int(settings["birthday_role_id"])) if guild and settings.get("birthday_role_id") else None
-
-    # Add role (best-effort)
-    if role:
-        try:
-            await member.add_roles(role, reason="Birthday (manual announce)")
-        except Exception:
-            pass
-
-    # Send announcement (avoid duplicates for today)
-    if not await birthday_was_announced(guild_id, int(member.id), today):
-        await channel.send(format_template(msg_t, member))
-        await birthday_mark_announced(guild_id, int(member.id), today)
-
+    await interaction.response.send_message("✅ Attempting birthday announcements now.", ephemeral=True)
     await update_birthday_list_message(bot, guild_id)
-    await interaction.response.send_message(f"✅ Announced birthday for {member.mention}.", ephemeral=True)
-
 
 # ---- QOTD ----
-# ---- QOTD ----
+
 qotd_group = discord.app_commands.Group(name="qotd", description="Question of the Day")
 
 @discord.app_commands.default_permissions(manage_guild=True)
@@ -2789,6 +2893,71 @@ async def voice_list_cmd(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 # ---- Welcome / Modlog ----
+
+# ---- Logging ----
+logging_group = discord.app_commands.Group(name="logging", description="Member join/leave logging")
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@logging_group.command(name="set_channel", description="Set the logging channel")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def logging_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = require_guild(interaction)
+    await set_modlog_channel(guild_id, int(channel.id))
+    await interaction.response.send_message(f"✅ Logging channel set to {channel.mention}", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@logging_group.command(name="enable", description="Enable member join/leave logging")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def logging_enable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    s = await get_guild_extras(guild_id)
+    if not s.get("modlog_channel_id"):
+        return await interaction.response.send_message("❌ Set the logging channel first with `/logging set_channel`.", ephemeral=True)
+    await set_logging_enabled(guild_id, True)
+    await interaction.response.send_message("✅ Logging enabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@logging_group.command(name="disable", description="Disable member join/leave logging")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def logging_disable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await set_logging_enabled(guild_id, False)
+    await interaction.response.send_message("🚫 Logging disabled.", ephemeral=True)
+
+
+# ---- Welcome ----
+welcome_cfg_group = discord.app_commands.Group(name="welcome", description="Welcome messages")
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@welcome_cfg_group.command(name="enable", description="Enable welcome messages")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def welcome_enable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await welcome_set_enabled(guild_id, True)
+    await interaction.response.send_message("✅ Welcome messages enabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@welcome_cfg_group.command(name="disable", description="Disable welcome messages")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def welcome_disable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await welcome_set_enabled(guild_id, False)
+    await interaction.response.send_message("🚫 Welcome messages disabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@welcome_cfg_group.command(name="set_custom_welcome", description="Set the welcome message template (use {user})")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def welcome_set_custom_cmd(interaction: discord.Interaction, text: str):
+    guild_id = require_guild(interaction)
+    await welcome_set_message(guild_id, text)
+    await interaction.response.send_message("✅ Welcome message updated.", ephemeral=True)
+
 welcome_group = discord.app_commands.Group(name="server", description="Welcome + member/bot management")
 
 @discord.app_commands.default_permissions(manage_guild=True)
@@ -2840,7 +3009,9 @@ bot.tree.add_command(sticky_group)
 bot.tree.add_command(autodelete_group)
 bot.tree.add_command(voice_group)
 bot.tree.add_command(welcome_group)
+bot.tree.add_command(welcome_cfg_group)
 
+bot.tree.add_command(logging_group)
 ############### ON_READY & BOT START ###############
 @bot.event
 async def on_ready():
