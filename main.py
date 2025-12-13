@@ -2475,6 +2475,7 @@ async def birthday_remove_cmd(interaction: discord.Interaction, member: discord.
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message(f"✅ Removed birthday for {member.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @birthday_group.command(name="set_role", description="Set the birthday role")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
@@ -2482,13 +2483,15 @@ async def birthday_set_role_cmd(interaction: discord.Interaction, role: discord.
     await birthday_set_role_channel_message(guild_id, int(role.id), None, None)
     await interaction.response.send_message(f"✅ Birthday role set to {role.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @birthday_group.command(name="set_channel", description="Set the birthday announcement channel")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+async def birthday_set_channel_cmd(interaction, channel):
     guild_id = require_guild(interaction)
     await birthday_set_role_channel_message(guild_id, None, int(channel.id), None)
     await interaction.response.send_message(f"✅ Birthday channel set to {channel.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @birthday_group.command(name="set_message", description="Set the birthday message template (use {user})")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_set_message_cmd(interaction: discord.Interaction, text: str):
@@ -2506,6 +2509,7 @@ async def birthday_publish_list_cmd(interaction: discord.Interaction, channel: d
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message(f"✅ Birthday list published in {channel.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @birthday_group.command(name="announce", description="Admin: manually announce birthdays for today")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_manual_announce_cmd(interaction: discord.Interaction):
@@ -2518,6 +2522,7 @@ async def birthday_manual_announce_cmd(interaction: discord.Interaction):
 # ---- QOTD ----
 qotd_group = discord.app_commands.Group(name="qotd", description="Question of the Day")
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @qotd_group.command(name="set_channel", description="Set the QOTD channel")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def qotd_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -2525,6 +2530,7 @@ async def qotd_set_channel_cmd(interaction: discord.Interaction, channel: discor
     await qotd_set(guild_id, int(channel.id), None, None, None)
     await interaction.response.send_message(f"✅ QOTD channel set to {channel.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @qotd_group.command(name="set_role", description="Set optional role ping for QOTD")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def qotd_set_role_cmd(interaction: discord.Interaction, role: discord.Role | None = None):
@@ -2532,6 +2538,7 @@ async def qotd_set_role_cmd(interaction: discord.Interaction, role: discord.Role
     await qotd_set(guild_id, None, int(role.id) if role else None, None, None)
     await interaction.response.send_message("✅ QOTD role updated", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @qotd_group.command(name="set_source", description="Set the QOTD source URL (one question per line, or CSV)")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def qotd_set_source_cmd(interaction: discord.Interaction, url: str):
@@ -2539,6 +2546,7 @@ async def qotd_set_source_cmd(interaction: discord.Interaction, url: str):
     await qotd_set(guild_id, None, None, None, url)
     await interaction.response.send_message("✅ QOTD source updated", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @qotd_group.command(name="set_prefix", description="Set the QOTD prefix line")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def qotd_set_prefix_cmd(interaction: discord.Interaction, text: str):
@@ -2583,6 +2591,7 @@ async def qotd_post_now_cmd(interaction: discord.Interaction):
 # ---- Sticky ----
 sticky_group = discord.app_commands.Group(name="sticky", description="Sticky messages")
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @sticky_group.command(name="set", description="Set a sticky message for a channel")
 @discord.app_commands.checks.has_permissions(manage_channels=True)
 async def sticky_set_cmd(interaction: discord.Interaction, channel: discord.TextChannel, content: str):
@@ -2590,6 +2599,7 @@ async def sticky_set_cmd(interaction: discord.Interaction, channel: discord.Text
     await sticky_set(guild_id, int(channel.id), content)
     await interaction.response.send_message(f"✅ Sticky set for {channel.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @sticky_group.command(name="clear", description="Clear a sticky message for a channel")
 @discord.app_commands.checks.has_permissions(manage_channels=True)
 async def sticky_clear_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -2600,6 +2610,7 @@ async def sticky_clear_cmd(interaction: discord.Interaction, channel: discord.Te
 # ---- Auto-delete ----
 autodelete_group = discord.app_commands.Group(name="autodelete", description="Auto-delete system")
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @autodelete_group.command(name="add_channel", description="Enable auto-delete in a channel")
 @discord.app_commands.checks.has_permissions(manage_channels=True)
 async def autodelete_add_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel, minutes: int, log_channel: discord.TextChannel | None = None):
@@ -2607,6 +2618,7 @@ async def autodelete_add_channel_cmd(interaction: discord.Interaction, channel: 
     await autodelete_set_channel(guild_id, int(channel.id), int(minutes)*60, int(log_channel.id) if log_channel else None)
     await interaction.response.send_message(f"✅ Auto-delete enabled in {channel.mention} after {minutes} minute(s).", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @autodelete_group.command(name="remove_channel", description="Disable auto-delete in a channel")
 @discord.app_commands.checks.has_permissions(manage_channels=True)
 async def autodelete_remove_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -2644,6 +2656,7 @@ VOICE_MODE_CHOICES = [
     discord.app_commands.Choice(name="Remove role on join, give on leave", value="remove_on_join"),
 ]
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @voice_group.command(name="link", description="Link a voice channel to a role")
 @discord.app_commands.checks.has_permissions(manage_roles=True)
 @discord.app_commands.choices(mode=VOICE_MODE_CHOICES)
@@ -2652,6 +2665,7 @@ async def voice_link_cmd(interaction: discord.Interaction, voice_channel: discor
     await voice_role_set_link(guild_id, int(voice_channel.id), int(role.id), mode.value)
     await interaction.response.send_message(f"✅ Linked {voice_channel.mention} ↔ {role.mention} ({mode.value})", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @voice_group.command(name="unlink", description="Remove a voice channel role link")
 @discord.app_commands.checks.has_permissions(manage_roles=True)
 async def voice_unlink_cmd(interaction: discord.Interaction, voice_channel: discord.VoiceChannel):
@@ -2676,6 +2690,7 @@ async def voice_list_cmd(interaction: discord.Interaction):
 # ---- Welcome / Modlog ----
 welcome_group = discord.app_commands.Group(name="server", description="Welcome + member/bot management")
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @welcome_group.command(name="set_welcome", description="Set welcome channel + message template (use {user})")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def server_set_welcome_cmd(interaction: discord.Interaction, channel: discord.TextChannel, text: str):
@@ -2683,6 +2698,7 @@ async def server_set_welcome_cmd(interaction: discord.Interaction, channel: disc
     await welcome_set(guild_id, int(channel.id), text, None, None, None, None)
     await interaction.response.send_message("✅ Welcome settings updated.", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @welcome_group.command(name="set_member_role", description="Set delayed member role")
 @discord.app_commands.checks.has_permissions(manage_roles=True)
 async def server_set_member_role_cmd(interaction: discord.Interaction, role: discord.Role, delay_seconds: int = 0):
@@ -2690,6 +2706,7 @@ async def server_set_member_role_cmd(interaction: discord.Interaction, role: dis
     await welcome_set(guild_id, None, None, int(role.id), int(delay_seconds), None, None)
     await interaction.response.send_message("✅ Member role settings updated.", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @welcome_group.command(name="set_bot_role", description="Set auto role for new bots")
 @discord.app_commands.checks.has_permissions(manage_roles=True)
 async def server_set_bot_role_cmd(interaction: discord.Interaction, role: discord.Role):
@@ -2697,6 +2714,7 @@ async def server_set_bot_role_cmd(interaction: discord.Interaction, role: discor
     await welcome_set(guild_id, None, None, None, None, int(role.id), None)
     await interaction.response.send_message("✅ Bot role updated.", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
 @welcome_group.command(name="set_modlog", description="Set member activity log channel (joins/leaves/kicks/bans)")
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def server_set_modlog_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
