@@ -2355,6 +2355,55 @@ async def config_system_cmd(
         ephemeral=True,
     )
 
+
+# ------------------------
+# /config logging
+# ------------------------
+@discord.app_commands.default_permissions(manage_guild=True)
+@config_group.command(name="logging", description="Configure join/leave logging")
+@discord.app_commands.checks.cooldown(rate=1, per=5.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def config_logging_cmd(
+    interaction: discord.Interaction,
+    enable: bool | None = None,
+    set_channel: discord.TextChannel | None = None,
+):
+    guild_id = require_guild(interaction)
+
+    used = _count_set(enable=enable, set_channel=set_channel)
+    ok = await _require_one_action(
+        interaction,
+        used,
+        "Example: `/config logging enable:true` or `/config logging set_channel:#modlog`",
+    )
+    if not ok:
+        return
+
+    action = used[0]
+
+    if action == "set_channel":
+        await set_modlog_channel(guild_id, int(set_channel.id))
+        await interaction.response.send_message(
+            f"✅ Logging channel set to {set_channel.mention}",
+            ephemeral=True,
+        )
+        return
+
+    if action == "enable":
+        if enable:
+            s = await get_guild_extras(guild_id)
+            if not s.get("modlog_channel_id"):
+                return await interaction.response.send_message(
+                    "❌ Set a logging channel first using `set_channel`.",
+                    ephemeral=True,
+                )
+
+        await set_logging_enabled(guild_id, bool(enable))
+        await interaction.response.send_message(
+            f"✅ Logging enabled set to `{bool(enable)}`",
+            ephemeral=True,
+        )
+
 # ------------------------
 # /config active
 # ------------------------
