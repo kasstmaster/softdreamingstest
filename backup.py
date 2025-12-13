@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS guild_settings (
 SCHEMA_ALTERS_SQL = """
 ALTER TABLE guild_settings
   ADD COLUMN IF NOT EXISTS active_mode TEXT NOT NULL DEFAULT 'all',
+  ADD COLUMN IF NOT EXISTS birthday_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS birthday_role_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS birthday_channel_id BIGINT NULL,
   ADD COLUMN IF NOT EXISTS birthday_message_text TEXT NOT NULL DEFAULT '🎉 Happy Birthday {user}! 🎂',
@@ -1536,7 +1537,7 @@ async def birthday_daily_loop(bot: commands.Bot):
     while not bot.is_closed():
         try:
             async with db_pool.acquire() as conn:
-                rows = await conn.fetch("SELECT guild_id, timezone, birthday_role_id, birthday_channel_id, birthday_message_text FROM guild_settings;")
+                rows = await conn.fetch("SELECT guild_id, timezone, birthday_enabled, birthday_role_id, birthday_channel_id, birthday_message_text FROM guild_settings;")
             for r in rows:
                 guild_id = int(r["guild_id"])
                 tz = r["timezone"] or "America/Los_Angeles"
@@ -1547,6 +1548,11 @@ async def birthday_daily_loop(bot: commands.Bot):
 
                 guild = bot.get_guild(guild_id)
                 if guild is None:
+                    continue
+
+                if not r.get("birthday_enabled"):
+                    continue
+                if not r.get("birthday_role_id") or not r.get("birthday_channel_id"):
                     continue
 
                 # remove birthday role from anyone who has it but isn't birthday today
@@ -1799,6 +1805,16 @@ async def birthday_set_role_channel_message(guild_id: int, role_id: int | None, 
                  WHERE guild_id=$1;""",
             guild_id, role_id, channel_id, message_text
         )
+
+
+async def birthday_set_enabled(guild_id: int, enabled: bool) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE guild_settings SET birthday_enabled=$2 WHERE guild_id=$1;",
+            int(guild_id),
+            bool(enabled),
+        )
+
 
 async def birthday_set_list_message(guild_id: int, channel_id: int | None, message_id: int | None) -> None:
     async with db_pool.acquire() as conn:
@@ -2544,6 +2560,9 @@ async def status_activity(interaction: discord.Interaction, user: discord.Member
 
 ############### NEW COMMAND GROUPS (BIRTHDAY / QOTD / STICKY / AUTODELETE / VOICE / WELCOME) ###############
 birthday_group = discord.app_commands.Group(name="birthday", description="Birthday system")
+birthday_config_group = discord.app_commands.Group(name="config", description="Birthday configuration", parent=birthday_group)
+
+# ----- USER COMMANDS -----
 
 @birthday_group.command(name="set", description="Set your birthday (MM/DD or MM/DD/YYYY)")
 async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: int, year: int | None = None):
@@ -2552,7 +2571,44 @@ async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: in
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message(f"✅ Birthday saved: {month:02d}/{day:02d}", ephemeral=True)
 
-@birthday_group.command(name="set_for", description="Admin: set another member's birthday")
+# ----- ADMIN / CONFIG COMMANDS -----
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_config_group.command(name="enable", description="Enable birthday announcements")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_enable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT birthday_role_id, birthday_channel_id FROM guild_settings WHERE guild_id=$1;",
+            int(guild_id),
+        )
+    missing = []
+    if not row or not row.get("birthday_role_id"):
+        missing.append("birthday role")
+    if not row or not row.get("birthday_channel_id"):
+        missing.append("birthday channel")
+    if missing:
+        return await interaction.response.send_message(
+            f"❌ Missing required settings: {', '.join(missing)}",
+            ephemeral=True,
+        )
+    await birthday_set_enabled(guild_id, True)
+    await interaction.response.send_message("✅ Birthday announcements enabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_config_group.command(name="disable", description="Disable birthday announcements")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_disable_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await birthday_set_enabled(guild_id, False)
+    await interaction.response.send_message("🚫 Birthday announcements disabled.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_config_group.command(name="set_for", description="Admin: set another member's birthday")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_set_for_cmd(interaction: discord.Interaction, member: discord.Member, month: int, day: int, year: int | None = None):
     guild_id = require_guild(interaction)
@@ -2560,7 +2616,9 @@ async def birthday_set_for_cmd(interaction: discord.Interaction, member: discord
     await update_birthday_list_message(bot, guild_id)
     await interaction.response.send_message(f"✅ Birthday saved for {member.mention}: {month:02d}/{day:02d}", ephemeral=True)
 
-@birthday_group.command(name="remove", description="Admin: remove a member's birthday")
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_config_group.command(name="remove", description="Admin: remove a member's birthday")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_remove_cmd(interaction: discord.Interaction, member: discord.Member):
     guild_id = require_guild(interaction)
@@ -2569,7 +2627,7 @@ async def birthday_remove_cmd(interaction: discord.Interaction, member: discord.
     await interaction.response.send_message(f"✅ Removed birthday for {member.mention}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="set_role", description="Set the birthday role")
+@birthday_config_group.command(name="set_role", description="Set the birthday role")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
@@ -2578,16 +2636,16 @@ async def birthday_set_role_cmd(interaction: discord.Interaction, role: discord.
     await interaction.response.send_message(f"✅ Birthday role set to {role.mention}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="set_channel", description="Set the birthday announcement channel")
+@birthday_config_group.command(name="set_channel", description="Set the birthday announcement channel")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_set_channel_cmd(interaction, channel):
+async def birthday_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
     guild_id = require_guild(interaction)
     await birthday_set_role_channel_message(guild_id, None, int(channel.id), None)
     await interaction.response.send_message(f"✅ Birthday channel set to {channel.mention}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="set_message", description="Set the birthday message template (use {user})")
+@birthday_config_group.command(name="set_custom_message", description="Set the birthday message template (use {user})")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_set_message_cmd(interaction: discord.Interaction, text: str):
@@ -2596,7 +2654,7 @@ async def birthday_set_message_cmd(interaction: discord.Interaction, text: str):
     await interaction.response.send_message("✅ Birthday message updated", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="publish_list", description="Create or update a public birthday list message")
+@birthday_config_group.command(name="publish_list", description="Create or update a public birthday list message")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_publish_list_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
@@ -2608,16 +2666,16 @@ async def birthday_publish_list_cmd(interaction: discord.Interaction, channel: d
     await interaction.response.send_message(f"✅ Birthday list published in {channel.mention}", ephemeral=True)
 
 @discord.app_commands.default_permissions(manage_guild=True)
-@birthday_group.command(name="announce", description="Admin: manually announce birthdays for today")
+@birthday_config_group.command(name="announce", description="Admin: manually announce birthdays for today")
+@discord.app_commands.checks.cooldown(rate=1, per=30.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
 async def birthday_manual_announce_cmd(interaction: discord.Interaction):
     guild_id = require_guild(interaction)
     await interaction.response.send_message("✅ Attempting birthday announcements now.", ephemeral=True)
-    # force-run by clearing last_seen for this guild (best-effort)
-    # just call update list and let loop handle role assignment next tick
     await update_birthday_list_message(bot, guild_id)
 
 # ---- QOTD ----
+
 qotd_group = discord.app_commands.Group(name="qotd", description="Question of the Day")
 
 @discord.app_commands.default_permissions(manage_guild=True)
