@@ -2509,7 +2509,7 @@ async def birthday_set_role_cmd(interaction: discord.Interaction, role: discord.
 @birthday_group.command(name="set_channel", description="Set the birthday announcement channel")
 @discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @discord.app_commands.checks.has_permissions(manage_guild=True)
-async def birthday_set_channel_cmd(interaction, channel):
+async def birthday_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
     guild_id = require_guild(interaction)
     await birthday_set_role_channel_message(guild_id, None, int(channel.id), None)
     await interaction.response.send_message(f"✅ Birthday channel set to {channel.mention}", ephemeral=True)
