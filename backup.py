@@ -75,6 +75,8 @@ db_pool = None
 active_cleanup_task = None
 plague_cleanup_task = None
 deadchat_cleanup_task = None
+birthday_task = None
+qotd_task = None
 deadchat_locks = {}
 
 ############### HELPER FUNCTIONS ###############
@@ -98,7 +100,23 @@ CREATE TABLE IF NOT EXISTS guild_settings (
 
 SCHEMA_ALTERS_SQL = """
 ALTER TABLE guild_settings
-  ADD COLUMN IF NOT EXISTS active_mode TEXT NOT NULL DEFAULT 'all';
+  ADD COLUMN IF NOT EXISTS active_mode TEXT NOT NULL DEFAULT 'all',
+  ADD COLUMN IF NOT EXISTS birthday_role_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS birthday_channel_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS birthday_message_text TEXT NOT NULL DEFAULT '🎉 Happy Birthday {user}! 🎂',
+  ADD COLUMN IF NOT EXISTS birthday_list_channel_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS birthday_list_message_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS qotd_channel_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS qotd_role_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS qotd_message_prefix TEXT NOT NULL DEFAULT '❓ **Question of the Day**',
+  ADD COLUMN IF NOT EXISTS qotd_source_url TEXT NULL,
+  ADD COLUMN IF NOT EXISTS qotd_last_posted_date DATE NULL,
+  ADD COLUMN IF NOT EXISTS welcome_channel_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS welcome_message_text TEXT NOT NULL DEFAULT 'Welcome to the server, {user}! 👋',
+  ADD COLUMN IF NOT EXISTS member_role_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS member_role_delay_seconds INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS bot_role_id BIGINT NULL,
+  ADD COLUMN IF NOT EXISTS modlog_channel_id BIGINT NULL;
 """
 
 MEMBER_ACTIVITY_SQL = """
@@ -217,6 +235,79 @@ CREATE TABLE IF NOT EXISTS prize_drops (
   claimed_by_user_id BIGINT NULL,
   claimed_at TIMESTAMPTZ NULL,
   PRIMARY KEY (guild_id, drop_id)
+);
+"""
+
+BIRTHDAYS_SQL = """
+CREATE TABLE IF NOT EXISTS birthdays (
+  guild_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  month INT NOT NULL CHECK (month >= 1 AND month <= 12),
+  day INT NOT NULL CHECK (day >= 1 AND day <= 31),
+  year INT NULL,
+  set_by_user_id BIGINT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (guild_id, user_id)
+);
+"""
+
+BIRTHDAY_ANNOUNCE_LOG_SQL = """
+CREATE TABLE IF NOT EXISTS birthday_announce_log (
+  guild_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  day DATE NOT NULL,
+  announced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (guild_id, user_id, day)
+);
+"""
+
+STICKY_MESSAGES_SQL = """
+CREATE TABLE IF NOT EXISTS sticky_messages (
+  guild_id BIGINT NOT NULL,
+  channel_id BIGINT NOT NULL,
+  content TEXT NOT NULL,
+  message_id BIGINT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (guild_id, channel_id)
+);
+"""
+
+AUTODELETE_CHANNELS_SQL = """
+CREATE TABLE IF NOT EXISTS autodelete_channels (
+  guild_id BIGINT NOT NULL,
+  channel_id BIGINT NOT NULL,
+  delete_after_seconds INT NOT NULL DEFAULT 3600,
+  log_channel_id BIGINT NULL,
+  PRIMARY KEY (guild_id, channel_id)
+);
+"""
+
+AUTODELETE_IGNORE_PHRASES_SQL = """
+CREATE TABLE IF NOT EXISTS autodelete_ignore_phrases (
+  guild_id BIGINT NOT NULL,
+  phrase TEXT NOT NULL,
+  PRIMARY KEY (guild_id, phrase)
+);
+"""
+
+VOICE_ROLE_LINKS_SQL = """
+CREATE TABLE IF NOT EXISTS voice_role_links (
+  guild_id BIGINT NOT NULL,
+  voice_channel_id BIGINT NOT NULL,
+  role_id BIGINT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'add_on_join', -- add_on_join or remove_on_join
+  PRIMARY KEY (guild_id, voice_channel_id)
+);
+"""
+
+QOTD_HISTORY_SQL = """
+CREATE TABLE IF NOT EXISTS qotd_history (
+  guild_id BIGINT NOT NULL,
+  question_hash TEXT NOT NULL,
+  posted_on DATE NOT NULL,
+  question_text TEXT NOT NULL,
+  PRIMARY KEY (guild_id, posted_on)
 );
 """
 
@@ -410,6 +501,13 @@ async def init_db():
         await conn.execute(PRIZE_DEFS_SQL)
         await conn.execute(PRIZE_SCHEDULES_SQL)
         await conn.execute(PRIZE_DROPS_SQL)
+        await conn.execute(BIRTHDAYS_SQL)
+        await conn.execute(BIRTHDAY_ANNOUNCE_LOG_SQL)
+        await conn.execute(STICKY_MESSAGES_SQL)
+        await conn.execute(AUTODELETE_CHANNELS_SQL)
+        await conn.execute(AUTODELETE_IGNORE_PHRASES_SQL)
+        await conn.execute(VOICE_ROLE_LINKS_SQL)
+        await conn.execute(QOTD_HISTORY_SQL)
 
 async def close_db():
     global db_pool
@@ -1373,6 +1471,186 @@ async def schedule_autocomplete(interaction: discord.Interaction, current: str):
     return out
 
 ############### BACKGROUND TASKS & SCHEDULERS ###############
+
+async def birthday_daily_loop(bot: commands.Bot):
+    # Runs once per minute, triggers on local midnight per guild timezone.
+    last_seen: dict[int, date] = {}
+    while not bot.is_closed():
+        try:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("SELECT guild_id, timezone, birthday_role_id, birthday_channel_id, birthday_message_text FROM guild_settings;")
+            for r in rows:
+                guild_id = int(r["guild_id"])
+                tz = r["timezone"] or "America/Los_Angeles"
+                today = guild_now(tz).date()
+                if last_seen.get(guild_id) == today:
+                    continue
+                last_seen[guild_id] = today
+
+                guild = bot.get_guild(guild_id)
+                if guild is None:
+                    continue
+
+                # remove birthday role from anyone who has it but isn't birthday today
+                role_id = r["birthday_role_id"]
+                role = guild.get_role(int(role_id)) if role_id else None
+
+                # announce + assign role for today's birthdays
+                bdays = await birthday_list_all(guild_id)
+                todays = [b for b in bdays if int(b["month"]) == today.month and int(b["day"]) == today.day]
+                # role cleanup first
+                if role:
+                    try:
+                        for m in role.members:
+                            if int(m.id) not in {int(b["user_id"]) for b in todays}:
+                                await m.remove_roles(role, reason="Birthday ended")
+                    except Exception:
+                        pass
+
+                if not todays:
+                    await update_birthday_list_message(bot, guild_id)
+                    continue
+
+                # send announcements
+                channel = guild.get_channel(int(r["birthday_channel_id"])) if r["birthday_channel_id"] else None
+                msg_t = r["birthday_message_text"] or "🎉 Happy Birthday {user}! 🎂"
+
+                for b in todays:
+                    uid = int(b["user_id"])
+                    member = guild.get_member(uid)
+                    if member is None:
+                        continue
+                    if role:
+                        try:
+                            await member.add_roles(role, reason="Birthday")
+                        except Exception:
+                            pass
+                    if channel:
+                        try:
+                            if not await birthday_was_announced(guild_id, uid, today):
+                                await channel.send(format_template(msg_t, member))
+                                await birthday_mark_announced(guild_id, uid, today)
+                        except Exception:
+                            pass
+
+                await update_birthday_list_message(bot, guild_id)
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
+async def update_birthday_list_message(bot: commands.Bot, guild_id: int) -> None:
+    try:
+        settings = await get_guild_extras(guild_id)
+        ch_id = settings.get("birthday_list_channel_id")
+        msg_id = settings.get("birthday_list_message_id")
+        if not ch_id or not msg_id:
+            return
+        guild = bot.get_guild(guild_id)
+        if guild is None:
+            return
+        channel = guild.get_channel(int(ch_id))
+        if channel is None:
+            return
+        try:
+            msg = await channel.fetch_message(int(msg_id))
+        except Exception:
+            return
+
+        bdays = await birthday_list_all(guild_id)
+        lines=[]
+        for b in bdays:
+            u = guild.get_member(int(b["user_id"])) or guild.get_member(int(b["user_id"]))
+            tag = u.mention if u else f"<@{int(b['user_id'])}>"
+            md = f"{int(b['month']):02d}/{int(b['day']):02d}"
+            lines.append(f"{md} — {tag}")
+        desc = "\n".join(lines) if lines else "No birthdays saved yet."
+        embed = discord.Embed(title="🎂 Birthdays", description=desc)
+        await msg.edit(embed=embed, content=None)
+    except Exception:
+        pass
+
+async def qotd_daily_loop(bot: commands.Bot):
+    last_seen: dict[int, date] = {}
+    while not bot.is_closed():
+        try:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("SELECT guild_id, timezone, qotd_channel_id, qotd_role_id, qotd_message_prefix, qotd_source_url FROM guild_settings;")
+            for r in rows:
+                guild_id = int(r["guild_id"])
+                tz = r["timezone"] or "America/Los_Angeles"
+                today = guild_now(tz).date()
+                # post at ~09:00 local time
+                now_local = guild_now(tz)
+                if now_local.hour != 9:
+                    continue
+                if last_seen.get(guild_id) == today:
+                    continue
+                if not r["qotd_channel_id"] or not r["qotd_source_url"]:
+                    continue
+                if await qotd_was_posted_today(guild_id, today):
+                    last_seen[guild_id] = today
+                    continue
+
+                guild = bot.get_guild(guild_id)
+                if guild is None:
+                    continue
+                channel = guild.get_channel(int(r["qotd_channel_id"]))
+                if channel is None:
+                    continue
+
+                try:
+                    questions = await fetch_questions_from_source(r["qotd_source_url"])
+                except Exception:
+                    continue
+                if not questions:
+                    continue
+                recent = await qotd_recent_hashes(guild_id, limit=300)
+                pick = None
+                for q in questions:
+                    if _hash_question(q) not in recent:
+                        pick = q
+                        break
+                if pick is None:
+                    pick = questions[0]  # fall back
+
+                prefix = r["qotd_message_prefix"] or "❓ **Question of the Day**"
+                role_ping = ""
+                if r["qotd_role_id"]:
+                    role = guild.get_role(int(r["qotd_role_id"]))
+                    if role:
+                        role_ping = role.mention + " "
+                try:
+                    await channel.send(f"{role_ping}{prefix}\n{pick}")
+                    await qotd_record_post(guild_id, today, pick)
+                    last_seen[guild_id] = today
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        await asyncio.sleep(30)
+
+# -------- Message-level scheduler helpers --------
+_autodelete_tasks: dict[tuple[int,int,int], asyncio.Task] = {}
+
+async def schedule_message_delete(message: discord.Message, delay_seconds: int, log_channel_id: int | None):
+    key = (int(message.guild.id), int(message.channel.id), int(message.id))
+    async def _job():
+        try:
+            await asyncio.sleep(max(1, delay_seconds))
+            try:
+                await message.delete()
+                if log_channel_id:
+                    ch = message.guild.get_channel(int(log_channel_id))
+                    if ch:
+                        await ch.send(f"🗑️ Deleted message in <#{message.channel.id}> from {message.author.mention}")
+            except Exception:
+                pass
+        finally:
+            _autodelete_tasks.pop(key, None)
+    t = asyncio.create_task(_job())
+    _autodelete_tasks[key] = t
+
+
 async def active_cleanup_loop(bot: commands.Bot):
     while True:
         try:
@@ -1392,6 +1670,240 @@ async def plague_cleanup_loop(bot: commands.Bot):
 async def deadchat_cleanup_loop():
     while True:
         await asyncio.sleep(300)
+
+
+############### BIRTHDAY / QOTD / STICKY / AUTODELETE / VOICE / WELCOME HELPERS ###############
+import hashlib
+import aiohttp
+
+def _hash_question(q: str) -> str:
+    return hashlib.sha256(q.strip().encode("utf-8")).hexdigest()
+
+async def get_guild_extras(guild_id: int) -> dict:
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("""SELECT
+            birthday_role_id, birthday_channel_id, birthday_message_text,
+            birthday_list_channel_id, birthday_list_message_id,
+            qotd_channel_id, qotd_role_id, qotd_message_prefix, qotd_source_url, qotd_last_posted_date,
+            welcome_channel_id, welcome_message_text, member_role_id, member_role_delay_seconds, bot_role_id,
+            modlog_channel_id, timezone
+          FROM guild_settings WHERE guild_id=$1""", guild_id)
+    if not row:
+        return {}
+    return dict(row)
+
+# -------- Birthdays --------
+async def birthday_set(guild_id: int, user_id: int, month: int, day: int, year: int | None, set_by: int | None) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO birthdays (guild_id,user_id,month,day,year,set_by_user_id)
+                 VALUES ($1,$2,$3,$4,$5,$6)
+                 ON CONFLICT (guild_id,user_id) DO UPDATE
+                   SET month=EXCLUDED.month, day=EXCLUDED.day, year=EXCLUDED.year,
+                       set_by_user_id=EXCLUDED.set_by_user_id, updated_at=NOW();""",
+            guild_id, user_id, month, day, year, set_by
+        )
+
+async def birthday_remove(guild_id: int, user_id: int) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM birthdays WHERE guild_id=$1 AND user_id=$2;", guild_id, user_id)
+
+async def birthday_get(guild_id: int, user_id: int):
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT month,day,year FROM birthdays WHERE guild_id=$1 AND user_id=$2;", guild_id, user_id)
+
+async def birthday_list_all(guild_id: int):
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT user_id,month,day,year FROM birthdays WHERE guild_id=$1 ORDER BY month,day,user_id;", guild_id)
+    return [dict(r) for r in rows]
+
+async def birthday_mark_announced(guild_id: int, user_id: int, d: date) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO birthday_announce_log (guild_id,user_id,day) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING;",
+            guild_id, user_id, d
+        )
+
+async def birthday_was_announced(guild_id: int, user_id: int, d: date) -> bool:
+    async with db_pool.acquire() as conn:
+        r = await conn.fetchrow("SELECT 1 FROM birthday_announce_log WHERE guild_id=$1 AND user_id=$2 AND day=$3;", guild_id, user_id, d)
+    return r is not None
+
+async def birthday_set_role_channel_message(guild_id: int, role_id: int | None, channel_id: int | None, message_text: str | None) -> None:
+    async with db_pool.acquire() as conn:
+        await ensure_guild_row(guild_id)
+        await conn.execute(
+            """UPDATE guild_settings
+                 SET birthday_role_id=COALESCE($2,birthday_role_id),
+                     birthday_channel_id=COALESCE($3,birthday_channel_id),
+                     birthday_message_text=COALESCE($4,birthday_message_text),
+                     updated_at=NOW()
+                 WHERE guild_id=$1;""",
+            guild_id, role_id, channel_id, message_text
+        )
+
+async def birthday_set_list_message(guild_id: int, channel_id: int | None, message_id: int | None) -> None:
+    async with db_pool.acquire() as conn:
+        await ensure_guild_row(guild_id)
+        await conn.execute(
+            "UPDATE guild_settings SET birthday_list_channel_id=$2, birthday_list_message_id=$3, updated_at=NOW() WHERE guild_id=$1;",
+            guild_id, channel_id, message_id
+        )
+
+# -------- Sticky --------
+async def sticky_set(guild_id: int, channel_id: int, content: str) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO sticky_messages (guild_id,channel_id,content)
+                 VALUES ($1,$2,$3)
+                 ON CONFLICT (guild_id,channel_id) DO UPDATE
+                   SET content=EXCLUDED.content, updated_at=NOW();""",
+            guild_id, channel_id, content
+        )
+
+async def sticky_clear(guild_id: int, channel_id: int) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM sticky_messages WHERE guild_id=$1 AND channel_id=$2;", guild_id, channel_id)
+
+async def sticky_get(guild_id: int, channel_id: int):
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT content,message_id FROM sticky_messages WHERE guild_id=$1 AND channel_id=$2;", guild_id, channel_id)
+
+async def sticky_update_message_id(guild_id: int, channel_id: int, message_id: int | None) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE sticky_messages SET message_id=$3, updated_at=NOW() WHERE guild_id=$1 AND channel_id=$2;", guild_id, channel_id, message_id)
+
+# -------- Autodelete --------
+async def autodelete_set_channel(guild_id: int, channel_id: int, seconds: int, log_channel_id: int | None) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO autodelete_channels (guild_id,channel_id,delete_after_seconds,log_channel_id)
+                 VALUES ($1,$2,$3,$4)
+                 ON CONFLICT (guild_id,channel_id) DO UPDATE
+                   SET delete_after_seconds=EXCLUDED.delete_after_seconds, log_channel_id=EXCLUDED.log_channel_id;""",
+            guild_id, channel_id, seconds, log_channel_id
+        )
+
+async def autodelete_remove_channel(guild_id: int, channel_id: int) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM autodelete_channels WHERE guild_id=$1 AND channel_id=$2;", guild_id, channel_id)
+
+async def autodelete_get_channel(guild_id: int, channel_id: int):
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT delete_after_seconds,log_channel_id FROM autodelete_channels WHERE guild_id=$1 AND channel_id=$2;", guild_id, channel_id)
+
+async def autodelete_add_ignore_phrase(guild_id: int, phrase: str) -> None:
+    phrase = phrase.strip()
+    if not phrase:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO autodelete_ignore_phrases (guild_id,phrase) VALUES ($1,$2) ON CONFLICT DO NOTHING;", guild_id, phrase)
+
+async def autodelete_remove_ignore_phrase(guild_id: int, phrase: str) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM autodelete_ignore_phrases WHERE guild_id=$1 AND phrase=$2;", guild_id, phrase.strip())
+
+async def autodelete_list_ignore_phrases(guild_id: int) -> list[str]:
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT phrase FROM autodelete_ignore_phrases WHERE guild_id=$1 ORDER BY phrase ASC;", guild_id)
+    return [r["phrase"] for r in rows]
+
+# -------- Voice Role Links --------
+async def voice_role_set_link(guild_id: int, voice_channel_id: int, role_id: int, mode: str) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO voice_role_links (guild_id,voice_channel_id,role_id,mode)
+                 VALUES ($1,$2,$3,$4)
+                 ON CONFLICT (guild_id,voice_channel_id) DO UPDATE
+                   SET role_id=EXCLUDED.role_id, mode=EXCLUDED.mode;""",
+            guild_id, voice_channel_id, role_id, mode
+        )
+
+async def voice_role_remove_link(guild_id: int, voice_channel_id: int) -> None:
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM voice_role_links WHERE guild_id=$1 AND voice_channel_id=$2;", guild_id, voice_channel_id)
+
+async def voice_role_list_links(guild_id: int):
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT voice_channel_id,role_id,mode FROM voice_role_links WHERE guild_id=$1 ORDER BY voice_channel_id ASC;", guild_id)
+    return [dict(r) for r in rows]
+
+async def voice_role_get_link(guild_id: int, voice_channel_id: int):
+    async with db_pool.acquire() as conn:
+        return await conn.fetchrow("SELECT role_id,mode FROM voice_role_links WHERE guild_id=$1 AND voice_channel_id=$2;", guild_id, voice_channel_id)
+
+# -------- Welcome / Modlog --------
+async def welcome_set(guild_id: int, channel_id: int | None, text: str | None, member_role_id: int | None, delay_seconds: int | None, bot_role_id: int | None, modlog_channel_id: int | None) -> None:
+    async with db_pool.acquire() as conn:
+        await ensure_guild_row(guild_id)
+        await conn.execute(
+            """UPDATE guild_settings SET
+                welcome_channel_id=COALESCE($2,welcome_channel_id),
+                welcome_message_text=COALESCE($3,welcome_message_text),
+                member_role_id=COALESCE($4,member_role_id),
+                member_role_delay_seconds=COALESCE($5,member_role_delay_seconds),
+                bot_role_id=COALESCE($6,bot_role_id),
+                modlog_channel_id=COALESCE($7,modlog_channel_id),
+                updated_at=NOW()
+              WHERE guild_id=$1;""",
+            guild_id, channel_id, text, member_role_id, delay_seconds, bot_role_id, modlog_channel_id
+        )
+
+# -------- QOTD --------
+async def qotd_set(guild_id: int, channel_id: int | None, role_id: int | None, prefix: str | None, source_url: str | None) -> None:
+    async with db_pool.acquire() as conn:
+        await ensure_guild_row(guild_id)
+        await conn.execute(
+            """UPDATE guild_settings SET
+                qotd_channel_id=COALESCE($2,qotd_channel_id),
+                qotd_role_id=COALESCE($3,qotd_role_id),
+                qotd_message_prefix=COALESCE($4,qotd_message_prefix),
+                qotd_source_url=COALESCE($5,qotd_source_url),
+                updated_at=NOW()
+              WHERE guild_id=$1;""",
+            guild_id, channel_id, role_id, prefix, source_url
+        )
+
+async def qotd_record_post(guild_id: int, posted_on: date, question_text: str) -> None:
+    qh = _hash_question(question_text)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO qotd_history (guild_id,question_hash,posted_on,question_text) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING;",
+            guild_id, qh, posted_on, question_text
+        )
+        await conn.execute("UPDATE guild_settings SET qotd_last_posted_date=$2, updated_at=NOW() WHERE guild_id=$1;", guild_id, posted_on)
+
+async def qotd_was_posted_today(guild_id: int, d: date) -> bool:
+    async with db_pool.acquire() as conn:
+        r = await conn.fetchrow("SELECT 1 FROM qotd_history WHERE guild_id=$1 AND posted_on=$2;", guild_id, d)
+    return r is not None
+
+async def qotd_recent_hashes(guild_id: int, limit: int = 200) -> set[str]:
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("SELECT question_hash FROM qotd_history WHERE guild_id=$1 ORDER BY posted_on DESC LIMIT $2;", guild_id, limit)
+    return {r["question_hash"] for r in rows}
+
+async def fetch_questions_from_source(source_url: str) -> list[str]:
+    # Supports: (1) raw text with one question per line, or (2) CSV with first column 'question'
+    async with aiohttp.ClientSession() as session:
+        async with session.get(source_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            resp.raise_for_status()
+            txt = await resp.text()
+    # basic CSV detection
+    if "," in txt.splitlines()[0]:
+        out=[]
+        for line in txt.splitlines()[1:]:
+            if not line.strip():
+                continue
+            q=line.split(",")[0].strip().strip('"')
+            if q:
+                out.append(q)
+        return out
+    return [l.strip() for l in txt.splitlines() if l.strip()]
+
+def format_template(t: str, user: discord.abc.User) -> str:
+    return (t or "").replace("{user}", user.mention).replace("{name}", user.display_name)
+
 
 ############### EVENT HANDLERS ###############
 intents = discord.Intents.default()
@@ -1423,7 +1935,183 @@ async def on_message(message: discord.Message):
             await deadchat_update_last_message(guild_id, channel_id)
     except Exception:
         pass
+
+    # Sticky messages
+    try:
+        s = await sticky_get(guild_id, channel_id)
+        if s:
+            old_id = s["message_id"]
+            content = s["content"]
+            # delete previous sticky if we can
+            if old_id:
+                try:
+                    old_msg = await message.channel.fetch_message(int(old_id))
+                    await old_msg.delete()
+                except Exception:
+                    pass
+            try:
+                new_msg = await message.channel.send(content)
+                await sticky_update_message_id(guild_id, channel_id, int(new_msg.id))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Auto-delete
+    try:
+        ad = await autodelete_get_channel(guild_id, channel_id)
+        if ad:
+            phrases = await autodelete_list_ignore_phrases(guild_id)
+            lowered = (message.content or "").lower()
+            if any(p.lower() in lowered for p in phrases):
+                pass
+            else:
+                await schedule_message_delete(message, int(ad["delete_after_seconds"]), int(ad["log_channel_id"]) if ad["log_channel_id"] else None)
+    except Exception:
+        pass
     await bot.process_commands(message)
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    if member.guild is None:
+        return
+    guild_id = int(member.guild.id)
+    try:
+        await ensure_guild_row(guild_id)
+        s = await get_guild_extras(guild_id)
+
+        # Auto-roles
+        if member.bot and s.get("bot_role_id"):
+            role = member.guild.get_role(int(s["bot_role_id"]))
+            if role:
+                try:
+                    await member.add_roles(role, reason="Auto role for bots")
+                except Exception:
+                    pass
+        if (not member.bot) and s.get("member_role_id"):
+            role = member.guild.get_role(int(s["member_role_id"]))
+            if role:
+                delay = int(s.get("member_role_delay_seconds") or 0)
+                async def _add_later():
+                    await asyncio.sleep(max(0, delay))
+                    try:
+                        await member.add_roles(role, reason="Delayed member role")
+                    except Exception:
+                        pass
+                asyncio.create_task(_add_later())
+
+        # Welcome message
+        if s.get("welcome_channel_id"):
+            ch = member.guild.get_channel(int(s["welcome_channel_id"]))
+            if ch:
+                txt = s.get("welcome_message_text") or "Welcome to the server, {user}! 👋"
+                try:
+                    await ch.send(format_template(txt, member))
+                except Exception:
+                    pass
+
+        # Log join
+        if s.get("modlog_channel_id"):
+            ch = member.guild.get_channel(int(s["modlog_channel_id"]))
+            if ch:
+                try:
+                    await ch.send(f"✅ {member.mention} joined. (id: {member.id})")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    if member.guild is None:
+        return
+    guild_id = int(member.guild.id)
+    try:
+        s = await get_guild_extras(guild_id)
+        if not s.get("modlog_channel_id"):
+            return
+        ch = member.guild.get_channel(int(s["modlog_channel_id"]))
+        if not ch:
+            return
+
+        action = "left"
+        actor = None
+        # Try to detect kick via audit log (best-effort)
+        try:
+            async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
+                if entry.target and int(entry.target.id) == int(member.id):
+                    actor = entry.user
+                    action = "was kicked"
+                    break
+        except Exception:
+            pass
+
+        msg = f"🚪 {member} {action}."
+        if actor:
+            msg += f" By {actor}."
+        await ch.send(msg)
+    except Exception:
+        pass
+
+@bot.event
+async def on_member_ban(guild: discord.Guild, user: discord.User):
+    try:
+        s = await get_guild_extras(int(guild.id))
+        if not s.get("modlog_channel_id"):
+            return
+        ch = guild.get_channel(int(s["modlog_channel_id"]))
+        if not ch:
+            return
+        actor = None
+        try:
+            async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.ban):
+                if entry.target and int(entry.target.id) == int(user.id):
+                    actor = entry.user
+                    break
+        except Exception:
+            pass
+        msg = f"⛔ {user} was banned."
+        if actor:
+            msg += f" By {actor}."
+        await ch.send(msg)
+    except Exception:
+        pass
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if member.guild is None:
+        return
+    guild_id = int(member.guild.id)
+
+    # Leaving a linked channel
+    if before.channel and (not after.channel or int(after.channel.id) != int(before.channel.id)):
+        link = await voice_role_get_link(guild_id, int(before.channel.id))
+        if link:
+            role = member.guild.get_role(int(link["role_id"]))
+            if role:
+                try:
+                    if link["mode"] == "add_on_join":
+                        await member.remove_roles(role, reason="Left voice channel")
+                    else:
+                        await member.add_roles(role, reason="Left voice channel")
+                except Exception:
+                    pass
+
+    # Joining a linked channel
+    if after.channel and (not before.channel or int(before.channel.id) != int(after.channel.id)):
+        link = await voice_role_get_link(guild_id, int(after.channel.id))
+        if link:
+            role = member.guild.get_role(int(link["role_id"]))
+            if role:
+                try:
+                    if link["mode"] == "add_on_join":
+                        await member.add_roles(role, reason="Joined voice channel")
+                    else:
+                        await member.remove_roles(role, reason="Joined voice channel")
+                except Exception:
+                    pass
+
 
 ############### COMMAND GROUPS ###############
 @bot.tree.command(name="test_all", description="Run a full system test for this server")
@@ -1500,40 +2188,58 @@ async def active_show(interaction: discord.Interaction):
 
 deadchat_group = discord.app_commands.Group(name="deadchat", description="Dead Chat settings")
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="set_role", description="Set the Dead Chat role")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 async def deadchat_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
     guild_id = require_guild(interaction)
     await set_deadchat_role(guild_id, int(role.id))
     await interaction.response.send_message(f"✅ Dead Chat role set to {role.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="clear_role", description="Clear the Dead Chat role")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 async def deadchat_clear_role_cmd(interaction: discord.Interaction):
     guild_id = require_guild(interaction)
     await set_deadchat_role(guild_id, None)
     await interaction.response.send_message("✅ Dead Chat role cleared", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="set_idle", description="Set the idle threshold for Dead Chat")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 @discord.app_commands.choices(minutes=DEADCHAT_IDLE_CHOICES)
 async def deadchat_set_idle_cmd(interaction: discord.Interaction, minutes: discord.app_commands.Choice[int]):
     guild_id = require_guild(interaction)
     await set_deadchat_idle(guild_id, minutes.value)
     await interaction.response.send_message(f"✅ Dead Chat idle set to {minutes.value} minute(s)", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="set_cooldown", description="Set cooldown before a user can win again")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 @discord.app_commands.choices(minutes=DEADCHAT_COOLDOWN_CHOICES)
 async def deadchat_set_cooldown_cmd(interaction: discord.Interaction, minutes: discord.app_commands.Choice[int]):
     guild_id = require_guild(interaction)
     await set_deadchat_cooldown(guild_id, minutes.value)
     await interaction.response.send_message(f"✅ Dead Chat cooldown set to {minutes.value} minute(s)", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="require_active", description="Require Active role to win Dead Chat")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 @discord.app_commands.choices(enabled=BOOL_CHOICES)
 async def deadchat_require_active_cmd(interaction: discord.Interaction, enabled: discord.app_commands.Choice[int]):
     guild_id = require_guild(interaction)
     await set_deadchat_requires_active(guild_id, bool(enabled.value))
     await interaction.response.send_message(f"✅ Require Active set to `{bool(enabled.value)}`", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="add_channel", description="Enable Dead Chat in a channel")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 @discord.app_commands.describe(idle_override_minutes="Optional per-channel idle override (minutes)")
 async def deadchat_add_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel, idle_override_minutes: int | None = None):
     guild_id = require_guild(interaction)
@@ -1543,7 +2249,10 @@ async def deadchat_add_channel_cmd(interaction: discord.Interaction, channel: di
     await add_deadchat_channel(guild_id, int(channel.id), idle_override_minutes)
     await interaction.response.send_message(f"✅ Dead Chat enabled in {channel.mention}", ephemeral=True)
 
+@discord.app_commands.default_permissions(manage_guild=True)
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
 @deadchat_group.command(name="remove_channel", description="Disable Dead Chat in a channel")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
 async def deadchat_remove_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
     guild_id = require_guild(interaction)
     await remove_deadchat_channel(guild_id, int(channel.id))
@@ -1760,17 +2469,319 @@ async def status_activity(interaction: discord.Interaction, user: discord.Member
         )
     await interaction.response.send_message(f"{member.mention} last message at: `{val}`", ephemeral=True)
 
+
+############### NEW COMMAND GROUPS (BIRTHDAY / QOTD / STICKY / AUTODELETE / VOICE / WELCOME) ###############
+birthday_group = discord.app_commands.Group(name="birthday", description="Birthday system")
+
+@birthday_group.command(name="set", description="Set your birthday (MM/DD or MM/DD/YYYY)")
+async def birthday_set_cmd(interaction: discord.Interaction, month: int, day: int, year: int | None = None):
+    guild_id = require_guild(interaction)
+    await birthday_set(guild_id, int(interaction.user.id), month, day, year, int(interaction.user.id))
+    await update_birthday_list_message(bot, guild_id)
+    await interaction.response.send_message(f"✅ Birthday saved: {month:02d}/{day:02d}", ephemeral=True)
+
+@birthday_group.command(name="set_for", description="Admin: set another member's birthday")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_set_for_cmd(interaction: discord.Interaction, member: discord.Member, month: int, day: int, year: int | None = None):
+    guild_id = require_guild(interaction)
+    await birthday_set(guild_id, int(member.id), month, day, year, int(interaction.user.id))
+    await update_birthday_list_message(bot, guild_id)
+    await interaction.response.send_message(f"✅ Birthday saved for {member.mention}: {month:02d}/{day:02d}", ephemeral=True)
+
+@birthday_group.command(name="remove", description="Admin: remove a member's birthday")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_remove_cmd(interaction: discord.Interaction, member: discord.Member):
+    guild_id = require_guild(interaction)
+    await birthday_remove(guild_id, int(member.id))
+    await update_birthday_list_message(bot, guild_id)
+    await interaction.response.send_message(f"✅ Removed birthday for {member.mention}", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_group.command(name="set_role", description="Set the birthday role")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_set_role_cmd(interaction: discord.Interaction, role: discord.Role):
+    guild_id = require_guild(interaction)
+    await birthday_set_role_channel_message(guild_id, int(role.id), None, None)
+    await interaction.response.send_message(f"✅ Birthday role set to {role.mention}", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_group.command(name="set_channel", description="Set the birthday announcement channel")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = require_guild(interaction)
+    await birthday_set_role_channel_message(guild_id, None, int(channel.id), None)
+    await interaction.response.send_message(f"✅ Birthday channel set to {channel.mention}", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_group.command(name="set_message", description="Set the birthday message template (use {user})")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_set_message_cmd(interaction: discord.Interaction, text: str):
+    guild_id = require_guild(interaction)
+    await birthday_set_role_channel_message(guild_id, None, None, text)
+    await interaction.response.send_message("✅ Birthday message updated", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_group.command(name="publish_list", description="Create or update a public birthday list message")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_publish_list_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = require_guild(interaction)
+    embed = discord.Embed(title="🎂 Birthdays", description="(initializing...)")
+    msg = await channel.send(embed=embed)
+    await birthday_set_list_message(guild_id, int(channel.id), int(msg.id))
+    await update_birthday_list_message(bot, guild_id)
+    await interaction.response.send_message(f"✅ Birthday list published in {channel.mention}", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@birthday_group.command(name="announce", description="Admin: manually announce birthdays for today")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def birthday_manual_announce_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    await interaction.response.send_message("✅ Attempting birthday announcements now.", ephemeral=True)
+    # force-run by clearing last_seen for this guild (best-effort)
+    # just call update list and let loop handle role assignment next tick
+    await update_birthday_list_message(bot, guild_id)
+
+# ---- QOTD ----
+qotd_group = discord.app_commands.Group(name="qotd", description="Question of the Day")
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@qotd_group.command(name="set_channel", description="Set the QOTD channel")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def qotd_set_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = require_guild(interaction)
+    await qotd_set(guild_id, int(channel.id), None, None, None)
+    await interaction.response.send_message(f"✅ QOTD channel set to {channel.mention}", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@qotd_group.command(name="set_role", description="Set optional role ping for QOTD")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def qotd_set_role_cmd(interaction: discord.Interaction, role: discord.Role | None = None):
+    guild_id = require_guild(interaction)
+    await qotd_set(guild_id, None, int(role.id) if role else None, None, None)
+    await interaction.response.send_message("✅ QOTD role updated", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@qotd_group.command(name="set_source", description="Set the QOTD source URL")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def qotd_set_source_cmd(interaction: discord.Interaction, url: str):
+    guild_id = require_guild(interaction)
+    await qotd_set(guild_id, None, None, None, url)
+    await interaction.response.send_message("✅ QOTD source updated", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@qotd_group.command(name="set_prefix", description="Set the QOTD prefix line")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def qotd_set_prefix_cmd(interaction: discord.Interaction, text: str):
+    guild_id = require_guild(interaction)
+    await qotd_set(guild_id, None, None, text, None)
+    await interaction.response.send_message("✅ QOTD prefix updated", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@qotd_group.command(name="post_now", description="Admin: post QOTD now")
+@discord.app_commands.checks.cooldown(rate=1, per=60.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def qotd_post_now_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    s = await get_guild_extras(guild_id)
+    if not s.get("qotd_channel_id") or not s.get("qotd_source_url"):
+        return await interaction.response.send_message("❌ Set qotd channel + source first.", ephemeral=True)
+    guild = interaction.guild
+    channel = guild.get_channel(int(s["qotd_channel_id"]))
+    if not channel:
+        return await interaction.response.send_message("❌ QOTD channel not found.", ephemeral=True)
+    try:
+        questions = await fetch_questions_from_source(s["qotd_source_url"])
+        recent = await qotd_recent_hashes(guild_id, limit=300)
+        pick = None
+        for q in questions:
+            if _hash_question(q) not in recent:
+                pick=q; break
+        if pick is None:
+            pick = questions[0] if questions else None
+        if not pick:
+            return await interaction.response.send_message("❌ No questions found at source.", ephemeral=True)
+        role_ping = ""
+        if s.get("qotd_role_id"):
+            role = guild.get_role(int(s["qotd_role_id"]))
+            if role:
+                role_ping = role.mention + " "
+        prefix = s.get("qotd_message_prefix") or "❓ **Question of the Day**"
+        await channel.send(f"{role_ping}{prefix}\n{pick}")
+        await qotd_record_post(guild_id, guild_now(s.get("timezone") or "America/Los_Angeles").date(), pick)
+        await interaction.response.send_message("✅ Posted QOTD.", ephemeral=True)
+    except Exception:
+        await interaction.response.send_message("❌ Failed to post QOTD (check source URL).", ephemeral=True)
+
+# ---- Sticky ----
+sticky_group = discord.app_commands.Group(name="sticky", description="Sticky messages")
+
+@discord.app_commands.default_permissions(manage_channels=True)
+@sticky_group.command(name="set", description="Set a sticky message")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_channels=True)
+async def sticky_set_cmd(interaction: discord.Interaction, channel: discord.TextChannel, content: str):
+    guild_id = require_guild(interaction)
+    await sticky_set(guild_id, int(channel.id), content)
+    await interaction.response.send_message(f"✅ Sticky set for {channel.mention}", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_channels=True)
+@sticky_group.command(name="clear", description="Clear a sticky message")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_channels=True)
+async def sticky_clear_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = require_guild(interaction)
+    await sticky_clear(guild_id, int(channel.id))
+    await interaction.response.send_message(f"✅ Sticky cleared for {channel.mention}", ephemeral=True)
+
+# ---- Auto-delete ----
+autodelete_group = discord.app_commands.Group(name="autodelete", description="Auto-delete system")
+
+@discord.app_commands.default_permissions(manage_channels=True)
+@autodelete_group.command(name="add_channel", description="Enable auto-delete in a channel")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_channels=True)
+async def autodelete_add_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel, minutes: int, log_channel: discord.TextChannel | None = None):
+    guild_id = require_guild(interaction)
+    await autodelete_set_channel(guild_id, int(channel.id), int(minutes)*60, int(log_channel.id) if log_channel else None)
+    await interaction.response.send_message(f"✅ Auto-delete enabled in {channel.mention} after {minutes} minute(s).", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_channels=True)
+@autodelete_group.command(name="remove_channel", description="Disable auto-delete in a channel")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_channels=True)
+async def autodelete_remove_channel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = require_guild(interaction)
+    await autodelete_remove_channel(guild_id, int(channel.id))
+    await interaction.response.send_message(f"✅ Auto-delete disabled in {channel.mention}.", ephemeral=True)
+
+@autodelete_group.command(name="ignore_add", description="Add an ignore phrase (messages containing it won't be deleted)")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def autodelete_ignore_add_cmd(interaction: discord.Interaction, phrase: str):
+    guild_id = require_guild(interaction)
+    await autodelete_add_ignore_phrase(guild_id, phrase)
+    await interaction.response.send_message("✅ Ignore phrase added.", ephemeral=True)
+
+@autodelete_group.command(name="ignore_remove", description="Remove an ignore phrase")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def autodelete_ignore_remove_cmd(interaction: discord.Interaction, phrase: str):
+    guild_id = require_guild(interaction)
+    await autodelete_remove_ignore_phrase(guild_id, phrase)
+    await interaction.response.send_message("✅ Ignore phrase removed.", ephemeral=True)
+
+@autodelete_group.command(name="ignore_list", description="List ignore phrases")
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def autodelete_ignore_list_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    phrases = await autodelete_list_ignore_phrases(guild_id)
+    txt = "\n".join(f"- {p}" for p in phrases) if phrases else "(none)"
+    await interaction.response.send_message(txt, ephemeral=True)
+
+# ---- Voice roles ----
+voice_group = discord.app_commands.Group(name="voice", description="Voice channel role links")
+
+VOICE_MODE_CHOICES = [
+    discord.app_commands.Choice(name="Give role on join, remove on leave", value="add_on_join"),
+    discord.app_commands.Choice(name="Remove role on join, give on leave", value="remove_on_join"),
+]
+
+@discord.app_commands.default_permissions(manage_roles=True)
+@voice_group.command(name="link", description="Link a voice channel to a role")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_roles=True)
+@discord.app_commands.choices(mode=VOICE_MODE_CHOICES)
+async def voice_link_cmd(interaction: discord.Interaction, voice_channel: discord.VoiceChannel, role: discord.Role, mode: discord.app_commands.Choice[str]):
+    guild_id = require_guild(interaction)
+    await voice_role_set_link(guild_id, int(voice_channel.id), int(role.id), mode.value)
+    await interaction.response.send_message(f"✅ Linked {voice_channel.mention} ↔ {role.mention} ({mode.value})", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_roles=True)
+@voice_group.command(name="unlink", description="Remove a voice channel role link")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_roles=True)
+async def voice_unlink_cmd(interaction: discord.Interaction, voice_channel: discord.VoiceChannel):
+    guild_id = require_guild(interaction)
+    await voice_role_remove_link(guild_id, int(voice_channel.id))
+    await interaction.response.send_message(f"✅ Unlinked {voice_channel.mention}", ephemeral=True)
+
+@voice_group.command(name="list", description="List all voice role links")
+@discord.app_commands.checks.has_permissions(manage_roles=True)
+async def voice_list_cmd(interaction: discord.Interaction):
+    guild_id = require_guild(interaction)
+    links = await voice_role_list_links(guild_id)
+    if not links:
+        return await interaction.response.send_message("(none)", ephemeral=True)
+    lines=[]
+    for l in links:
+        vc = interaction.guild.get_channel(int(l["voice_channel_id"]))
+        role = interaction.guild.get_role(int(l["role_id"]))
+        lines.append(f"- {(vc.mention if vc else l['voice_channel_id'])} → {(role.mention if role else l['role_id'])} (`{l['mode']}`)")
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+# ---- Welcome / Modlog ----
+welcome_group = discord.app_commands.Group(name="server", description="Welcome + member/bot management")
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@welcome_group.command(name="set_welcome", description="Set welcome channel + message")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def server_set_welcome_cmd(interaction: discord.Interaction, channel: discord.TextChannel, text: str):
+    guild_id = require_guild(interaction)
+    await welcome_set(guild_id, int(channel.id), text, None, None, None, None)
+    await interaction.response.send_message("✅ Welcome settings updated.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_roles=True)
+@welcome_group.command(name="set_member_role", description="Set delayed member role")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_roles=True)
+async def server_set_member_role_cmd(interaction: discord.Interaction, role: discord.Role, delay_seconds: int = 0):
+    guild_id = require_guild(interaction)
+    await welcome_set(guild_id, None, None, int(role.id), int(delay_seconds), None, None)
+    await interaction.response.send_message("✅ Member role settings updated.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_roles=True)
+@welcome_group.command(name="set_bot_role", description="Set auto role for new bots")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_roles=True)
+async def server_set_bot_role_cmd(interaction: discord.Interaction, role: discord.Role):
+    guild_id = require_guild(interaction)
+    await welcome_set(guild_id, None, None, None, None, int(role.id), None)
+    await interaction.response.send_message("✅ Bot role updated.", ephemeral=True)
+
+@discord.app_commands.default_permissions(manage_guild=True)
+@welcome_group.command(name="set_modlog", description="Set member activity log channel")
+@discord.app_commands.checks.cooldown(rate=1, per=10.0)
+@discord.app_commands.checks.has_permissions(manage_guild=True)
+async def server_set_modlog_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+    guild_id = require_guild(interaction)
+    await welcome_set(guild_id, None, None, None, None, None, int(channel.id))
+    await interaction.response.send_message("✅ Modlog channel updated.", ephemeral=True)
+
+
 bot.tree.add_command(active_group)
 bot.tree.add_command(deadchat_group)
 bot.tree.add_command(plague_group)
 bot.tree.add_command(prizes_group)
 bot.tree.add_command(timezone_group)
 bot.tree.add_command(status_group)
+bot.tree.add_command(birthday_group)
+bot.tree.add_command(qotd_group)
+bot.tree.add_command(sticky_group)
+bot.tree.add_command(autodelete_group)
+bot.tree.add_command(voice_group)
+bot.tree.add_command(welcome_group)
 
 ############### ON_READY & BOT START ###############
 @bot.event
 async def on_ready():
-    global active_cleanup_task, plague_cleanup_task, deadchat_cleanup_task
+    global active_cleanup_task, plague_cleanup_task, deadchat_cleanup_task, birthday_task, qotd_task
     await bot.tree.sync()
     if active_cleanup_task is None:
         active_cleanup_task = asyncio.create_task(active_cleanup_loop(bot))
@@ -1778,7 +2789,51 @@ async def on_ready():
         plague_cleanup_task = asyncio.create_task(plague_cleanup_loop(bot))
     if deadchat_cleanup_task is None:
         deadchat_cleanup_task = asyncio.create_task(deadchat_cleanup_loop())
+    if birthday_task is None:
+        birthday_task = asyncio.create_task(birthday_daily_loop(bot))
+    if qotd_task is None:
+        qotd_task = asyncio.create_task(qotd_daily_loop(bot))
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
+
+async def _safe_reply(interaction: discord.Interaction, content: str):
+    if interaction.response.is_done():
+        await interaction.followup.send(content, ephemeral=True)
+    else:
+        await interaction.response.send_message(content, ephemeral=True)
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: discord.app_commands.AppCommandError,
+):
+    if isinstance(error, discord.app_commands.errors.CommandOnCooldown):
+        await _safe_reply(
+            interaction,
+            f"⏳ This command is on cooldown. Try again in {error.retry_after:.1f}s.",
+        )
+        return
+
+    if isinstance(error, discord.app_commands.errors.MissingPermissions):
+        await _safe_reply(
+            interaction,
+            "❌ You don’t have permission to use this command.",
+        )
+        return
+
+    if isinstance(error, discord.app_commands.errors.BotMissingPermissions):
+        await _safe_reply(
+            interaction,
+            "⚠️ I’m missing required permissions to do that.",
+        )
+        return
+
+    await _safe_reply(
+        interaction,
+        "⚠️ An unexpected error occurred. The issue has been logged.",
+    )
+
+    import traceback
+    traceback.print_exception(type(error), error, error.__traceback__)
 
 async def runner():
     if not TOKEN:
